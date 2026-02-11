@@ -103,6 +103,17 @@ Enemy enemies[MAX_ENEMIES];
 AudioState g_audio;
 GameContext ctx;
 
+// FPS tracking
+unsigned int fps_last_tick = 0;
+int fps_frame_count = 0;
+int fps_display = 0;
+
+// Shoot SFX state
+#define SFX_SAMPLES 512
+volatile int sfx_channel = -1;
+volatile int sfx_remaining = 0;
+#define SFX_DURATION 2200  // samples of gunshot noise
+
 // Musical note frequencies
 float get_frequency(const char* note_str) {
     char note = note_str[0];
@@ -239,6 +250,48 @@ void start_audio() {
     }
 }
 
+// SFX audio thread - separate channel for gunshot
+int sfx_thread(SceSize args, void* argp) {
+    short sfx_buffer[SFX_SAMPLES * 2];
+    unsigned int lfsr = 0xACE1u; // noise seed
+
+    while (g_audio.audio_thread_running) {
+        if (sfx_remaining <= 0) {
+            // Silence when no SFX playing
+            memset(sfx_buffer, 0, sizeof(sfx_buffer));
+        } else {
+            for (int i = 0; i < SFX_SAMPLES; i++) {
+                short sample = 0;
+                if (sfx_remaining > 0) {
+                    // LFSR white noise with decay envelope
+                    unsigned int bit = ((lfsr >> 0) ^ (lfsr >> 2) ^ (lfsr >> 3) ^ (lfsr >> 5)) & 1;
+                    lfsr = (lfsr >> 1) | (bit << 15);
+                    float envelope = (float)sfx_remaining / (float)SFX_DURATION;
+                    sample = (short)((((int)(lfsr & 0xFF) - 128) * envelope) * 180);
+                    sfx_remaining--;
+                }
+                sfx_buffer[i * 2] = sample;
+                sfx_buffer[i * 2 + 1] = sample;
+            }
+        }
+        sceAudioOutputPannedBlocking(sfx_channel,
+            PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, sfx_buffer);
+    }
+    return 0;
+}
+
+void start_sfx() {
+    sfx_channel = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, SFX_SAMPLES, PSP_AUDIO_FORMAT_STEREO);
+    if (sfx_channel >= 0) {
+        int thid = sceKernelCreateThread("sfx_thread", sfx_thread, 0x12, 0x10000, 0, NULL);
+        if (thid >= 0) sceKernelStartThread(thid, 0, NULL);
+    }
+}
+
+void play_shoot_sfx() {
+    sfx_remaining = SFX_DURATION;
+}
+
 // Exit callback
 int exit_callback(int arg1, int arg2, void *common) {
     log_debug("Exit callback triggered - cleaning up...");
@@ -246,6 +299,9 @@ int exit_callback(int arg1, int arg2, void *common) {
     sceKernelDelayThread(100000);
     if (g_audio.audio_channel >= 0) {
         sceAudioChRelease(g_audio.audio_channel);
+    }
+    if (sfx_channel >= 0) {
+        sceAudioChRelease(sfx_channel);
     }
     log_debug("Exiting game...");
     if (debug_log) fclose(debug_log);
@@ -688,6 +744,16 @@ void render3D() {
 
     // Level name
     drawString(280, SCREEN_HEIGHT - 18, level->name, 0xFFAAAAFF);
+
+    // FPS counter
+    char fpsStr[8];
+    fpsStr[0] = '0' + (fps_display / 10);
+    fpsStr[1] = '0' + (fps_display % 10);
+    fpsStr[2] = 'F';
+    fpsStr[3] = 'P';
+    fpsStr[4] = 'S';
+    fpsStr[5] = '\0';
+    drawString(SCREEN_WIDTH - 38, SCREEN_HEIGHT - 18, fpsStr, 0xFF44FF44);
 }
 
 // Update player
@@ -775,6 +841,7 @@ void handleShooting(SceCtrlData* pad) {
 
     if(pad->Buttons & PSP_CTRL_CROSS) {
         if(!shoot_pressed) {
+            play_shoot_sfx();
             const LevelData* level = &all_levels[ctx.current_level];
             for(int i = 0; i < level->enemy_count; i++) {
                 if(!enemies[i].alive) continue;
@@ -868,8 +935,10 @@ int main(int argc, char *argv[]) {
     loadLevel(0);
     log_debug("Starting audio...");
     start_audio();
+    start_sfx();
 
     log_debug("Entering main loop...");
+    fps_last_tick = sceKernelGetSystemTimeLow();
 
     SceCtrlData pad;
 
@@ -930,6 +999,16 @@ int main(int argc, char *argv[]) {
         }
 
         ctx.frame_count++;
+
+        // FPS calculation
+        fps_frame_count++;
+        unsigned int now = sceKernelGetSystemTimeLow();
+        unsigned int elapsed = now - fps_last_tick;
+        if(elapsed >= 1000000) { // 1 second in microseconds
+            fps_display = fps_frame_count;
+            fps_frame_count = 0;
+            fps_last_tick = now;
+        }
 
         // Swap buffers
         sceDisplaySetFrameBuf(draw_buffer ? fbp1 : fbp0, BUF_WIDTH, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_NEXTFRAME);
