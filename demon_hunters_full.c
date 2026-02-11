@@ -13,7 +13,7 @@
 
 #include "dh_all_levels.h"
 
-PSP_MODULE_INFO("Demon Hunters Full", 0, 1, 0);
+PSP_MODULE_INFO("Demon Hunters", 0, 0, 4);
 
 // Debug logging to memory stick
 FILE* debug_log = NULL;
@@ -47,6 +47,7 @@ static int draw_buffer = 0;
 
 // Game states
 typedef enum {
+    STATE_TITLE,
     STATE_LEVEL_START,
     STATE_PLAYING,
     STATE_LEVEL_COMPLETE,
@@ -348,65 +349,104 @@ void drawRect(int x, int y, int w, int h, unsigned int color) {
     }
 }
 
-// Draw a single character (simple 5x7 bitmap font)
-void drawChar(int cx, int cy, char c, unsigned int color) {
-    static const unsigned char font[][5] = {
-        {0x7C,0x82,0x82,0x82,0x7C}, // 0
-        {0x00,0x84,0xFE,0x80,0x00}, // 1
-        {0xC4,0xA2,0x92,0x8A,0x84}, // 2
-        {0x44,0x82,0x92,0x92,0x6C}, // 3
-        {0x30,0x28,0x24,0xFE,0x20}, // 4
-        {0x4E,0x8A,0x8A,0x8A,0x72}, // 5
-        {0x78,0x94,0x92,0x92,0x60}, // 6
-        {0x02,0xE2,0x12,0x0A,0x06}, // 7
-        {0x6C,0x92,0x92,0x92,0x6C}, // 8
-        {0x0C,0x92,0x92,0x52,0x3C}, // 9
-        {0x7C,0x12,0x12,0x12,0x7C}, // A
-        {0xFE,0x92,0x92,0x92,0x6C}, // B
-        {0x7C,0x82,0x82,0x82,0x44}, // C
-        {0xFE,0x82,0x82,0x82,0x7C}, // D
-        {0xFE,0x92,0x92,0x92,0x82}, // E
-        {0xFE,0x12,0x12,0x12,0x02}, // F
-        {0x7C,0x82,0x92,0x92,0x74}, // G
-        {0xFE,0x10,0x10,0x10,0xFE}, // H
-        {0x00,0x82,0xFE,0x82,0x00}, // I
-        {0x40,0x80,0x80,0x80,0x7E}, // J
-        {0xFE,0x10,0x28,0x44,0x82}, // K
-        {0xFE,0x80,0x80,0x80,0x80}, // L
-        {0xFE,0x04,0x08,0x04,0xFE}, // M
-        {0xFE,0x04,0x08,0x10,0xFE}, // N
-        {0x7C,0x82,0x82,0x82,0x7C}, // O
-        {0xFE,0x12,0x12,0x12,0x0C}, // P
-        {0x7C,0x82,0xA2,0x42,0xBC}, // Q
-        {0xFE,0x12,0x32,0x52,0x8C}, // R
-        {0x4C,0x92,0x92,0x92,0x64}, // S
-        {0x02,0x02,0xFE,0x02,0x02}, // T
-        {0x7E,0x80,0x80,0x80,0x7E}, // U
-        {0x3E,0x40,0x80,0x40,0x3E}, // V
-        {0x7E,0x80,0x60,0x80,0x7E}, // W
-        {0xC6,0x28,0x10,0x28,0xC6}, // X
-        {0x06,0x08,0xF0,0x08,0x06}, // Y
-        {0xC2,0xA2,0x92,0x8A,0x86}, // Z
-        {0x00,0x00,0x00,0x00,0x00}, // space
-        {0x60,0x90,0x90,0x60,0x00}, // :  (used as degree)
-    };
-    int idx = -1;
-    if(c >= '0' && c <= '9') idx = c - '0';
-    else if(c >= 'A' && c <= 'Z') idx = c - 'A' + 10;
-    else if(c >= 'a' && c <= 'z') idx = c - 'a' + 10;
-    else if(c == ' ') idx = 36;
-    else if(c == ':') idx = 37;
-    else return;
+// Bitmap font data (5x8, column-major, bit0=top row)
+static const unsigned char font_data[][5] = {
+    {0x7C,0x82,0x82,0x82,0x7C}, // 0
+    {0x00,0x84,0xFE,0x80,0x00}, // 1
+    {0xC4,0xA2,0x92,0x8A,0x84}, // 2
+    {0x44,0x82,0x92,0x92,0x6C}, // 3
+    {0x30,0x28,0x24,0xFE,0x20}, // 4
+    {0x4E,0x8A,0x8A,0x8A,0x72}, // 5
+    {0x78,0x94,0x92,0x92,0x60}, // 6
+    {0x02,0xE2,0x12,0x0A,0x06}, // 7
+    {0x6C,0x92,0x92,0x92,0x6C}, // 8
+    {0x0C,0x92,0x92,0x52,0x3C}, // 9
+    {0x7C,0x12,0x12,0x12,0x7C}, // A (10)
+    {0xFE,0x92,0x92,0x92,0x6C}, // B
+    {0x7C,0x82,0x82,0x82,0x44}, // C
+    {0xFE,0x82,0x82,0x82,0x7C}, // D
+    {0xFE,0x92,0x92,0x92,0x82}, // E
+    {0xFE,0x12,0x12,0x12,0x02}, // F
+    {0x7C,0x82,0x92,0x92,0x74}, // G
+    {0xFE,0x10,0x10,0x10,0xFE}, // H
+    {0x00,0x82,0xFE,0x82,0x00}, // I
+    {0x40,0x80,0x80,0x80,0x7E}, // J
+    {0xFE,0x10,0x28,0x44,0x82}, // K
+    {0xFE,0x80,0x80,0x80,0x80}, // L
+    {0xFE,0x04,0x08,0x04,0xFE}, // M
+    {0xFE,0x04,0x08,0x10,0xFE}, // N
+    {0x7C,0x82,0x82,0x82,0x7C}, // O
+    {0xFE,0x12,0x12,0x12,0x0C}, // P
+    {0x7C,0x82,0xA2,0x42,0xBC}, // Q
+    {0xFE,0x12,0x32,0x52,0x8C}, // R
+    {0x4C,0x92,0x92,0x92,0x64}, // S
+    {0x02,0x02,0xFE,0x02,0x02}, // T
+    {0x7E,0x80,0x80,0x80,0x7E}, // U
+    {0x3E,0x40,0x80,0x40,0x3E}, // V
+    {0x7E,0x80,0x60,0x80,0x7E}, // W
+    {0xC6,0x28,0x10,0x28,0xC6}, // X
+    {0x06,0x08,0xF0,0x08,0x06}, // Y
+    {0xC2,0xA2,0x92,0x8A,0x86}, // Z (35)
+    {0x00,0x00,0x00,0x00,0x00}, // space (36)
+    {0x60,0x90,0x90,0x60,0x00}, // : (37)
+    {0x60,0x30,0x18,0x0C,0x06}, // / (38)
+    {0x10,0x10,0x10,0x10,0x10}, // - (39)
+    {0x00,0xC0,0xC0,0x00,0x00}, // . (40)
+};
 
+static int fontIndex(char c) {
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'A' && c <= 'Z') return c - 'A' + 10;
+    if(c >= 'a' && c <= 'z') return c - 'a' + 10;
+    if(c == ' ') return 36;
+    if(c == ':') return 37;
+    if(c == '/') return 38;
+    if(c == '-') return 39;
+    if(c == '.') return 40;
+    return -1;
+}
+
+static int strPixelWidth(const char* str, int scale) {
+    int len = 0;
+    while(*str++) len++;
+    return len * 6 * scale;
+}
+
+// Draw a single character (simple 5x8 bitmap font)
+void drawChar(int cx, int cy, char c, unsigned int color) {
+    int idx = fontIndex(c);
+    if(idx < 0) return;
     unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
     for(int col = 0; col < 5; col++) {
-        unsigned char bits = font[idx][col];
+        unsigned char bits = font_data[idx][col];
         for(int row = 0; row < 8; row++) {
             if(bits & (1 << row)) {
                 int px = cx + col;
                 int py = cy + row;
                 if(px >= 0 && px < SCREEN_WIDTH && py >= 0 && py < SCREEN_HEIGHT)
                     vram[py * BUF_WIDTH + px] = color;
+            }
+        }
+    }
+}
+
+// Draw a scaled character (each font pixel becomes scale*scale block)
+void drawCharScaled(int cx, int cy, char c, unsigned int color, int scale) {
+    int idx = fontIndex(c);
+    if(idx < 0) return;
+    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    for(int col = 0; col < 5; col++) {
+        unsigned char bits = font_data[idx][col];
+        for(int row = 0; row < 8; row++) {
+            if(bits & (1 << row)) {
+                for(int sy = 0; sy < scale; sy++) {
+                    for(int sx = 0; sx < scale; sx++) {
+                        int px = cx + col * scale + sx;
+                        int py = cy + row * scale + sy;
+                        if(px >= 0 && px < SCREEN_WIDTH && py >= 0 && py < SCREEN_HEIGHT)
+                            vram[py * BUF_WIDTH + px] = color;
+                    }
+                }
             }
         }
     }
@@ -420,13 +460,35 @@ void drawString(int x, int y, const char* str, unsigned int color) {
     }
 }
 
+void drawStringScaled(int x, int y, const char* str, unsigned int color, int scale) {
+    while(*str) {
+        drawCharScaled(x, y, *str, color, scale);
+        x += 6 * scale;
+        str++;
+    }
+}
+
+// Draw string centered horizontally on screen
+void drawStringCentered(int y, const char* str, unsigned int color) {
+    int x = (SCREEN_WIDTH - strPixelWidth(str, 1)) / 2;
+    drawString(x, y, str, color);
+}
+
+// Draw scaled string centered horizontally on screen
+void drawStringCenteredScaled(int y, const char* str, unsigned int color, int scale) {
+    int x = (SCREEN_WIDTH - strPixelWidth(str, scale)) / 2;
+    drawStringScaled(x, y, str, color, scale);
+}
+
 // Z-buffer for sprite occlusion
 float zBuffer[480];
 
 void clearScreen(unsigned int color) {
     unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
-    for(int i = 0; i < BUF_WIDTH * SCREEN_HEIGHT; i++) {
-        vram[i] = color;
+    // Fill first row then memcpy to remaining rows
+    for(int x = 0; x < BUF_WIDTH; x++) vram[x] = color;
+    for(int y = 1; y < SCREEN_HEIGHT; y++) {
+        memcpy(vram + y * BUF_WIDTH, vram, BUF_WIDTH * 4);
     }
 }
 
@@ -435,6 +497,7 @@ typedef struct {
     float distance;
     int side;
     float wallX;
+    int mapHitX, mapHitY;
 } RayHit;
 
 RayHit castRay(float px, float py, float angle) {
@@ -492,30 +555,34 @@ RayHit castRay(float px, float py, float angle) {
         hit.wallX = px + hit.distance * rayDirX;
     }
     hit.wallX -= floorf(hit.wallX);
+    hit.mapHitX = mapX;
+    hit.mapHitY = mapY;
 
     return hit;
 }
 
 // Render 3D view
 void render3D() {
-    // Draw ceiling and floor
+    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+
+    // Draw ceiling and floor - bulk fill rows
     for(int y = 0; y < SCREEN_HEIGHT / 2; y++) {
-        unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
-        for(int x = 0; x < SCREEN_WIDTH; x++) {
-            vram[y * BUF_WIDTH + x] = 0xFF333333;
-        }
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF333333;
     }
     for(int y = SCREEN_HEIGHT / 2; y < SCREEN_HEIGHT; y++) {
-        unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
-        for(int x = 0; x < SCREEN_WIDTH; x++) {
-            vram[y * BUF_WIDTH + x] = 0xFF666666;
-        }
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF666666;
     }
+
+    // Precompute constant trig for ray fan
+    float tanHalfFov = tanf(FOV / 2.0f);
+    float invWidth = 2.0f / (float)SCREEN_WIDTH;
 
     // Cast rays + fill z-buffer
     for(int x = 0; x < SCREEN_WIDTH; x++) {
-        float cameraX = 2.0f * x / (float)SCREEN_WIDTH - 1.0f;
-        float rayAngle = player.angle + atanf(cameraX * tanf(FOV / 2.0f));
+        float cameraX = x * invWidth - 1.0f;
+        float rayAngle = player.angle + atanf(cameraX * tanHalfFov);
 
         RayHit hit = castRay(player.x, player.y, rayAngle);
         zBuffer[x] = hit.distance;
@@ -525,47 +592,99 @@ void render3D() {
             int drawStart = (-lineHeight / 2 + SCREEN_HEIGHT / 2);
             int drawEnd = (lineHeight / 2 + SCREEN_HEIGHT / 2);
 
-            // Procedural brick texture (from Lode's tutorial technique)
-            int texX = (int)(hit.wallX * 32.0f) % 32;
-            int texRow = 0; // calculated per-pixel below
+            // Procedural textures: brick, stone, gold, moss
+            int texX = (int)(hit.wallX * 32.0f) & 31;
 
-            unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
             float step = 32.0f / (float)lineHeight;
             float texPos = (drawStart < 0) ? (-drawStart * step) : 0.0f;
             int yStart = (drawStart < 0) ? 0 : drawStart;
             int yEnd = (drawEnd >= SCREEN_HEIGHT) ? SCREEN_HEIGHT - 1 : drawEnd;
 
+            // Precompute fog as fixed-point per column (constant for whole column)
+            int fogFP = (int)((1.0f - (hit.distance / 20.0f)) * 256.0f);
+            if(fogFP < 38) fogFP = 38;
+            if(fogFP > 256) fogFP = 256;
+            int sideShift = hit.side;
+
+            // Texture type: level sets primary, some tiles get accent
+            int baseType = ctx.current_level & 3;
+            int tileHash = (hit.mapHitX * 7 + hit.mapHitY * 13) & 7;
+            int texType = (tileHash < 2) ? ((baseType + 1) & 3) : baseType;
+
             for(int y = yStart; y <= yEnd; y++) {
-                texRow = (int)texPos & 31;
+                int texRow = (int)texPos & 31;
                 texPos += step;
 
-                // Brick pattern: alternating rows offset
-                int brickRow = texRow / 8;
-                int brickX = (brickRow % 2) ? ((texX + 16) % 32) : texX;
-                int isMortar = (texRow % 8 == 0) || (brickX % 16 == 0);
-
                 unsigned int color;
-                if(isMortar) {
-                    color = 0xFF888888; // mortar lines
-                } else {
-                    // Vary brick color slightly by position
-                    int shade = 0x88 + ((brickRow * 37 + brickX / 16 * 53) & 0x1F);
-                    if(shade > 0xAA) shade = 0xAA;
-                    color = 0xFF000000 | (shade << 16) | ((shade/2) << 8) | (shade/4);
+                switch(texType) {
+                case 0: { // BRICK - red/brown (ABGR: B at bit16, R at bit0)
+                    int brickRow = texRow >> 3;
+                    int brickX = (brickRow & 1) ? ((texX + 16) & 31) : texX;
+                    int isMortar = ((texRow & 7) == 0) | ((brickX & 15) == 0);
+                    if(isMortar) {
+                        color = 0xFF888888;
+                    } else {
+                        int shade = 0x88 + ((brickRow * 37 + (brickX >> 4) * 53) & 0x1F);
+                        if(shade > 0xAA) shade = 0xAA;
+                        color = 0xFF000000 | ((shade >> 2) << 16) | ((shade >> 1) << 8) | shade;
+                    }
+                    break;
+                }
+                case 1: { // STONE - gray rough blocks
+                    int blockRow = texRow >> 4;
+                    int blockX = texX >> 4;
+                    int isGrout = ((texRow & 15) < 1) | ((texX & 15) < 1);
+                    if(isGrout) {
+                        color = 0xFF555555;
+                    } else {
+                        int shade = 0x77 + ((blockRow * 47 + blockX * 31 + texRow * 3 + texX * 7) & 0x1F);
+                        if(shade > 0x99) shade = 0x99;
+                        color = 0xFF000000 | (shade << 16) | (shade << 8) | shade;
+                    }
+                    break;
+                }
+                case 2: { // GOLD - yellow/amber (ABGR)
+                    int brickRow = texRow >> 3;
+                    int brickX = (brickRow & 1) ? ((texX + 16) & 31) : texX;
+                    int isMortar = ((texRow & 7) == 0) | ((brickX & 15) == 0);
+                    if(isMortar) {
+                        color = 0xFF446666;
+                    } else {
+                        int s = 0x99 + ((brickRow * 41 + (brickX >> 4) * 59 + texX * 3) & 0x2F);
+                        if(s > 0xDD) s = 0xDD;
+                        color = 0xFF000000 | ((s >> 2) << 16) | (((s * 200) >> 8) << 8) | s;
+                    }
+                    break;
+                }
+                default: { // MOSS - green-tinted stone (ABGR)
+                    int blockRow = texRow >> 4;
+                    int blockX = texX >> 4;
+                    int isGrout = ((texRow & 15) < 1) | ((texX & 15) < 1);
+                    if(isGrout) {
+                        color = 0xFF445544;
+                    } else {
+                        int shade = 0x55 + ((blockRow * 29 + blockX * 43 + texRow * 5) & 0x2F);
+                        if(shade > 0x88) shade = 0x88;
+                        int isMoss = ((texRow * 7 + texX * 13) & 7) < 3;
+                        if(isMoss) {
+                            color = 0xFF000000 | ((shade/3) << 16) | (shade << 8) | (shade/2);
+                        } else {
+                            color = 0xFF000000 | ((shade/2) << 16) | (((shade*3)>>2) << 8) | ((shade*3)>>2);
+                        }
+                    }
+                    break;
+                }
                 }
 
-                // Side shading (from Lode's tutorial: darken y-side walls)
-                if(hit.side == 1) color = (color >> 1) & 0xFF7F7F7F;
+                // Side shading via bitshift
+                if(sideShift) color = (color >> 1) & 0xFF7F7F7F;
 
-                // Distance fog
-                float fog = 1.0f - (hit.distance / 20.0f);
-                if(fog < 0.15f) fog = 0.15f;
-                int r = (int)(((color >> 16) & 0xFF) * fog);
-                int g = (int)(((color >> 8) & 0xFF) * fog);
-                int b = (int)((color & 0xFF) * fog);
-                color = 0xFF000000 | (r << 16) | (g << 8) | b;
+                // Integer fog (fixed-point multiply + shift)
+                int r = (((color >> 16) & 0xFF) * fogFP) >> 8;
+                int g = (((color >> 8) & 0xFF) * fogFP) >> 8;
+                int b = ((color & 0xFF) * fogFP) >> 8;
 
-                vram[y * BUF_WIDTH + x] = color;
+                vram[y * BUF_WIDTH + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         }
     }
@@ -594,7 +713,7 @@ void render3D() {
     }
 
     // Draw sorted enemies with z-buffer occlusion
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    float halfFov = FOV / 2.0f;
     for(int si = 0; si < visibleCount; si++) {
         int i = sortedEnemies[si];
         float dx = enemies[i].x - player.x;
@@ -607,50 +726,86 @@ void render3D() {
 
         float distance = enemies[i].distance;
 
-        if(fabsf(angleDiff) < FOV / 2.0f && distance > 0.5f) {
-            int screenX = (int)(SCREEN_WIDTH / 2 + (angleDiff / (FOV / 2.0f)) * (SCREEN_WIDTH / 2));
+        if(fabsf(angleDiff) < halfFov && distance > 0.5f) {
+            int screenX = (int)(SCREEN_WIDTH / 2 + (angleDiff / halfFov) * (SCREEN_WIDTH / 2));
             int spriteHeight = (int)(SCREEN_HEIGHT / distance);
             int spriteWidth = spriteHeight / 2;
             if(spriteWidth < 4) spriteWidth = 4;
             int drawStartY = (SCREEN_HEIGHT - spriteHeight) / 2;
             int drawEndY = drawStartY + spriteHeight;
 
-            // Draw enemy as humanoid shape with z-buffer check
-            for(int sx = screenX - spriteWidth/2; sx < screenX + spriteWidth/2; sx++) {
-                if(sx < 0 || sx >= SCREEN_WIDTH) continue;
-                // Z-buffer: skip if wall is closer
+            // Clamp Y range
+            int yStart = (drawStartY < 0) ? 0 : drawStartY;
+            int yEnd = (drawEndY >= SCREEN_HEIGHT) ? SCREEN_HEIGHT - 1 : drawEndY;
+            int sxStart = screenX - spriteWidth / 2;
+            int sxEnd = screenX + spriteWidth / 2;
+            if(sxStart < 0) sxStart = 0;
+            if(sxEnd > SCREEN_WIDTH) sxEnd = SCREEN_WIDTH;
+
+            // Precompute fog as integer for this enemy
+            int eFogFP = (int)((1.0f - (distance / 20.0f)) * 256.0f);
+            if(eFogFP < 38) eFogFP = 38;
+            if(eFogFP > 256) eFogFP = 256;
+
+            // Fixed-point thresholds (scaled to spriteHeight * 256)
+            int headEnd = spriteHeight * 56;    // 0.22 * 256
+            int bodyEnd = spriteHeight * 166;   // 0.65 * 256
+
+            for(int sx = sxStart; sx < sxEnd; sx++) {
                 if(distance > zBuffer[sx]) continue;
 
-                for(int y = drawStartY; y < drawEndY && y < SCREEN_HEIGHT; y++) {
-                    if(y < 0) continue;
+                // centerX in fixed-point (0-256 range)
+                int relXFP = ((sx - (screenX - spriteWidth/2)) * 256) / spriteWidth;
+                int centerXFP = relXFP - 128;
+                if(centerXFP < 0) centerXFP = -centerXFP;
+                centerXFP *= 2; // now 0-256 range
 
-                    // Sprite shape: head, body, legs
-                    float relY = (float)(y - drawStartY) / (float)spriteHeight;
-                    float relX = (float)(sx - (screenX - spriteWidth/2)) / (float)spriteWidth;
-                    float centerX = fabsf(relX - 0.5f) * 2.0f;
+                for(int y = yStart; y <= yEnd; y++) {
+                    // relY in fixed-point (0-256 range)
+                    int relYFP = ((y - drawStartY) * 256);
 
                     unsigned int eColor;
-                    if(relY < 0.2f) {
-                        // Head (circle)
-                        if(centerX > 0.6f) continue;
-                        eColor = 0xFFDDAA88; // skin
-                    } else if(relY < 0.65f) {
-                        // Body
-                        if(centerX > 0.8f) continue;
-                        eColor = 0xFFCC2222; // red torso
+                    if(relYFP < headEnd) {
+                        if(centerXFP > 153) continue; // head width 60%
+                        eColor = 0xFF3333EE; // bright red demon skin (ABGR)
+
+                        // Face detail using percentage coordinates
+                        int headFrac = (relYFP * 100) / headEnd; // 0-99 vertical
+                        int headXFrac = (centerXFP * 100) / 153; // 0-99 from center
+
+                        // Horns: top 15%, outer 60-90% from center
+                        if(headFrac < 15 && headXFrac >= 60 && headXFrac < 95) {
+                            eColor = 0xFF181888;
+                        }
+                        // Eyes: 28-48% height, 25-65% from center
+                        else if(headFrac >= 28 && headFrac < 48 && headXFrac >= 25 && headXFrac < 65) {
+                            eColor = 0xFF00FFFF; // glowing yellow (ABGR)
+                        }
+                        // Mouth teeth: 72-92% height, within 65% of center
+                        else if(headFrac >= 72 && headFrac < 92 && headXFrac < 65) {
+                            if((relXFP >> 4) & 1) {
+                                eColor = 0xFFDDEEEE; // white teeth (ABGR)
+                            } else {
+                                eColor = 0xFF000044; // dark mouth gaps (ABGR)
+                            }
+                        }
+                    } else if(relYFP < bodyEnd) {
+                        if(centerXFP > 204) continue; // body width 80%
+                        eColor = 0xFF2222DD; // vivid red body (ABGR)
                     } else {
-                        // Legs
-                        if(centerX > 0.4f && centerX < 0.6f) continue; // gap between legs
-                        if(centerX > 0.9f) continue;
-                        eColor = 0xFF444444; // dark legs
+                        if(centerXFP > 102 && centerXFP < 153) continue; // leg gap
+                        if(centerXFP > 230) continue;
+                        eColor = 0xFF1818AA; // red legs (ABGR)
                     }
 
-                    // Apply distance fog to enemy too
-                    float fog = 1.0f - (distance / 20.0f);
-                    if(fog < 0.15f) fog = 0.15f;
-                    int r = (int)(((eColor >> 16) & 0xFF) * fog);
-                    int g = (int)(((eColor >> 8) & 0xFF) * fog);
-                    int b = (int)((eColor & 0xFF) * fog);
+                    // Death flash: alternate white/bright red
+                    if(enemies[i].death_frame > 0) {
+                        eColor = (enemies[i].death_frame & 2) ? 0xFFFFFFFF : 0xFF3333FF;
+                    }
+
+                    int r = (((eColor >> 16) & 0xFF) * eFogFP) >> 8;
+                    int g = (((eColor >> 8) & 0xFF) * eFogFP) >> 8;
+                    int b = ((eColor & 0xFF) * eFogFP) >> 8;
 
                     vram[y * BUF_WIDTH + sx] = 0xFF000000 | (r << 16) | (g << 8) | b;
                 }
@@ -717,7 +872,7 @@ void render3D() {
         int ex = mapOffX + (int)(enemies[i].x * mapScale);
         int ey = mapOffY + (int)(enemies[i].y * mapScale);
         if(ex >= 0 && ex < SCREEN_WIDTH && ey >= 0 && ey < SCREEN_HEIGHT)
-            vram[ey * BUF_WIDTH + ex] = 0xFFFF0000;
+            vram[ey * BUF_WIDTH + ex] = 0xFF0000FF; // red in ABGR
     }
 
     // Draw HUD bar
@@ -727,7 +882,7 @@ void render3D() {
     // Lives
     drawString(8, SCREEN_HEIGHT - 18, "LIVES", 0xFF888888);
     for(int i = 0; i < player.lives; i++) {
-        drawRect(48 + i * 12, SCREEN_HEIGHT - 18, 8, 10, 0xFFFF4444);
+        drawRect(48 + i * 12, SCREEN_HEIGHT - 18, 8, 10, 0xFF4444FF);
     }
 
     // Kills
@@ -740,10 +895,10 @@ void render3D() {
     killStr[8] = '0' + (kr / 10);
     killStr[9] = '0' + (kr % 10);
     killStr[10] = '\0';
-    drawString(120, SCREEN_HEIGHT - 18, killStr, 0xFFFFCC00);
+    drawString(120, SCREEN_HEIGHT - 18, killStr, 0xFF00CCFF);
 
     // Level name
-    drawString(280, SCREEN_HEIGHT - 18, level->name, 0xFFAAAAFF);
+    drawString(280, SCREEN_HEIGHT - 18, level->name, 0xFFFFAAAA);
 
     // FPS counter
     char fpsStr[8];
@@ -754,6 +909,25 @@ void render3D() {
     fpsStr[4] = 'S';
     fpsStr[5] = '\0';
     drawString(SCREEN_WIDTH - 38, SCREEN_HEIGHT - 18, fpsStr, 0xFF44FF44);
+
+    // Damage flash - red border when player just got hit
+    if(player.invulnerable_frames > 100) {
+        unsigned int flashColor = 0xFF0000FF; // red in ABGR
+        int t = 3;
+        for(int y = 0; y < t; y++) {
+            unsigned int* row = vram + y * BUF_WIDTH;
+            for(int fx = 0; fx < SCREEN_WIDTH; fx++) row[fx] = flashColor;
+        }
+        for(int y = SCREEN_HEIGHT - t; y < SCREEN_HEIGHT; y++) {
+            unsigned int* row = vram + y * BUF_WIDTH;
+            for(int fx = 0; fx < SCREEN_WIDTH; fx++) row[fx] = flashColor;
+        }
+        for(int y = t; y < SCREEN_HEIGHT - t; y++) {
+            unsigned int* row = vram + y * BUF_WIDTH;
+            for(int fx = 0; fx < t; fx++) row[fx] = flashColor;
+            for(int fx = SCREEN_WIDTH - t; fx < SCREEN_WIDTH; fx++) row[fx] = flashColor;
+        }
+    }
 }
 
 // Update player
@@ -818,6 +992,15 @@ void updateEnemies() {
     for(int i = 0; i < level->enemy_count; i++) {
         if(!enemies[i].alive) continue;
 
+        // Death animation countdown
+        if(enemies[i].death_frame > 0) {
+            enemies[i].death_frame--;
+            if(enemies[i].death_frame == 0) {
+                enemies[i].alive = 0;
+            }
+            continue; // dying enemies don't move or attack
+        }
+
         float dx = player.x - enemies[i].x;
         float dy = player.y - enemies[i].y;
         float dist = sqrtf(dx*dx + dy*dy);
@@ -856,8 +1039,8 @@ void handleShooting(SceCtrlData* pad) {
 
                 if(fabsf(angleDiff) < 0.087f) {
                     float distance = sqrtf(dx*dx + dy*dy);
-                    if(distance < 15.0f) {
-                        enemies[i].alive = 0;
+                    if(distance < 15.0f && enemies[i].death_frame == 0) {
+                        enemies[i].death_frame = 12; // flash for 12 frames then die
                         player.kills++;
                         break;
                     }
@@ -910,6 +1093,224 @@ void loadLevel(int level_index) {
     ctx.state_timer = 120; // 2 seconds
 }
 
+// Draw title screen
+void drawTitleScreen(int frame) {
+    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+
+    // Dark background with slow vertical gradient
+    for(int y = 0; y < SCREEN_HEIGHT; y++) {
+        int shade = 8 + (y * 20) / SCREEN_HEIGHT;
+        unsigned int bg = 0xFF000000 | ((shade/4) << 16) | ((shade/3) << 8) | shade;
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = bg;
+    }
+
+    // Animated scanlines
+    for(int y = 0; y < SCREEN_HEIGHT; y += 3) {
+        if(((y + frame/2) % 6) < 2) {
+            unsigned int* row = vram + y * BUF_WIDTH;
+            for(int x = 0; x < SCREEN_WIDTH; x++) {
+                unsigned int c = row[x];
+                row[x] = ((c >> 1) & 0xFF7F7F7F) | 0xFF000000;
+            }
+        }
+    }
+
+    // "DEMON" - scaled 3x, centered, with shadow
+    drawStringCenteredScaled(40, "DEMON", 0xFF1133BB, 3);   // shadow
+    int dx = (SCREEN_WIDTH - strPixelWidth("DEMON", 3)) / 2;
+    drawStringScaled(dx + 1, 39, "DEMON", 0xFF2244DD, 3);   // highlight
+    drawStringCenteredScaled(40, "DEMON", 0xFF2244DD, 3);    // main
+
+    // "HUNTERS" - scaled 3x, centered, with shadow
+    drawStringCenteredScaled(68, "HUNTERS", 0xFF22AADD, 3);  // shadow
+    int hx = (SCREEN_WIDTH - strPixelWidth("HUNTERS", 3)) / 2;
+    drawStringScaled(hx + 1, 67, "HUNTERS", 0xFF33CCFF, 3);  // highlight
+    drawStringCenteredScaled(68, "HUNTERS", 0xFF33CCFF, 3);   // main
+
+    // Version
+    drawStringCentered(96, "V0.05", 0xFF555555);
+
+    // Decorative rule under title
+    for(int x = 140; x < SCREEN_WIDTH - 140; x++)
+        vram[106 * BUF_WIDTH + x] = 0xFF002244;
+
+    // Blinking "PRESS START"
+    if((frame / 30) % 2 == 0) {
+        drawStringCenteredScaled(130, "PRESS START", 0xFFFFFFFF, 2);
+    }
+
+    // Controls hint - centered
+    drawStringCentered(200, "DPAD MOVE   X FIRE", 0xFF888888);
+    drawStringCentered(215, "L R STRAFE", 0xFF888888);
+
+    // Bottom line
+    drawRect(0, SCREEN_HEIGHT - 2, SCREEN_WIDTH, 2, 0xFF002244);
+}
+
+// Draw level intro card
+void drawLevelIntro(int timer) {
+    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    const LevelData* level = &all_levels[ctx.current_level];
+
+    // Fade in: 120 frames total, first 30 fade in
+    int alpha = (120 - timer);
+    if(alpha > 30) alpha = 30;
+    int shade = (alpha * 255) / 30;
+
+    // Black background
+    for(int y = 0; y < SCREEN_HEIGHT; y++) {
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF000000;
+    }
+
+    // Top/bottom bars (cinematic)
+    for(int y = 0; y < 40; y++) {
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF111111;
+    }
+    for(int y = SCREEN_HEIGHT - 40; y < SCREEN_HEIGHT; y++) {
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF111111;
+    }
+
+    // Horizontal rule
+    for(int x = 80; x < SCREEN_WIDTH - 80; x++) {
+        vram[85 * BUF_WIDTH + x] = 0xFF002244;
+        vram[170 * BUF_WIDTH + x] = 0xFF002244;
+    }
+
+    // Level number - centered, scale 2
+    char lvlNum[12];
+    lvlNum[0] = 'L'; lvlNum[1] = 'E'; lvlNum[2] = 'V'; lvlNum[3] = 'E'; lvlNum[4] = 'L';
+    lvlNum[5] = ' ';
+    lvlNum[6] = '0' + ((ctx.current_level + 1) / 10);
+    lvlNum[7] = '0' + ((ctx.current_level + 1) % 10);
+    lvlNum[8] = '\0';
+
+    unsigned int textCol = 0xFF000000 | ((shade * 0x22 / 255) << 16) | ((shade * 0x44 / 255) << 8) | (shade * 0xCC / 255);
+    drawStringCenteredScaled(100, lvlNum, textCol, 2);
+
+    // Level name - centered
+    unsigned int nameCol = 0xFF000000 | ((shade * 0x88 / 255) << 16) | ((shade * 0xCC / 255) << 8) | (shade * 0xFF / 255);
+    drawStringCentered(128, level->name, nameCol);
+
+    // "GET READY" blinking near the end - centered
+    if(timer < 60 && (timer / 10) % 2 == 0) {
+        drawStringCentered(150, "GET READY", 0xFF00FFFF);
+    }
+}
+
+// Draw level complete card
+void drawLevelComplete(int timer) {
+    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    const LevelData* level = &all_levels[ctx.current_level];
+
+    // Dark green tinted background
+    for(int y = 0; y < SCREEN_HEIGHT; y++) {
+        int g = 15 + (y * 10) / SCREEN_HEIGHT;
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF000000 | (g << 8);
+    }
+
+    // Cinematic bars
+    for(int y = 0; y < 40; y++) {
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF0A0A0A;
+    }
+    for(int y = SCREEN_HEIGHT - 40; y < SCREEN_HEIGHT; y++) {
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF0A0A0A;
+    }
+
+    drawStringCenteredScaled(65, "LEVEL COMPLETE", 0xFF44FF44, 2);
+
+    // Horizontal rule
+    for(int x = 100; x < SCREEN_WIDTH - 100; x++)
+        vram[90 * BUF_WIDTH + x] = 0xFF226622;
+
+    // Stats - centered
+    char killStr[20];
+    killStr[0] = 'K'; killStr[1] = 'I'; killStr[2] = 'L'; killStr[3] = 'L'; killStr[4] = 'S';
+    killStr[5] = ' ';
+    killStr[6] = '0' + (player.kills / 10);
+    killStr[7] = '0' + (player.kills % 10);
+    killStr[8] = '/';
+    killStr[9] = '0' + (level->kills_required / 10);
+    killStr[10] = '0' + (level->kills_required % 10);
+    killStr[11] = '\0';
+    drawStringCentered(110, killStr, 0xFF00CCFF);
+
+    char livesStr[12];
+    livesStr[0] = 'L'; livesStr[1] = 'I'; livesStr[2] = 'V'; livesStr[3] = 'E'; livesStr[4] = 'S';
+    livesStr[5] = ' ';
+    livesStr[6] = '0' + player.lives;
+    livesStr[7] = '\0';
+    drawStringCentered(126, livesStr, 0xFF4444FF);
+
+    // Progress bar - centered
+    int progress = ((ctx.current_level + 1) * 200) / TOTAL_LEVELS;
+    drawRect(140, 150, 200, 8, 0xFF222222);
+    drawRect(140, 150, progress, 8, 0xFF44AA44);
+    drawRect(140, 150, 200, 1, 0xFF66CC66);
+
+    // "NEXT LEVEL" blinking - centered
+    if(timer < 80 && (timer / 15) % 2 == 0) {
+        drawStringCentered(170, "PRESS START", 0xFFFFFFFF);
+    }
+}
+
+// Draw game over screen
+void drawGameOver(int timer) {
+    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+
+    // Dark red background
+    for(int y = 0; y < SCREEN_HEIGHT; y++) {
+        int r = 20 + (y * 15) / SCREEN_HEIGHT;
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF000000 | r;
+    }
+
+    drawStringCenteredScaled(80, "GAME OVER", 0xFF2222FF, 3);
+
+    // Skull icon - centered
+    int skullX = (SCREEN_WIDTH - 28) / 2;
+    drawRect(skullX, 112, 28, 22, 0xFFCCCCCC);
+    drawRect(skullX + 5, 116, 5, 5, 0xFF000000);  // left eye
+    drawRect(skullX + 18, 116, 5, 5, 0xFF000000);  // right eye
+    drawRect(skullX + 10, 126, 8, 3, 0xFF000000);  // mouth
+
+    if(timer < 120 && (timer / 20) % 2 == 0) {
+        drawStringCentered(160, "PRESS START TO RETRY", 0xFFFFFFFF);
+    }
+}
+
+// Draw victory screen
+void drawVictory(int frame) {
+    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+
+    // Gold gradient background
+    for(int y = 0; y < SCREEN_HEIGHT; y++) {
+        int shade = 15 + (y * 20) / SCREEN_HEIGHT;
+        unsigned int* row = vram + y * BUF_WIDTH;
+        for(int x = 0; x < SCREEN_WIDTH; x++)
+            row[x] = 0xFF000000 | ((shade / 3) << 16) | (shade << 8) | shade;
+    }
+
+    drawStringCenteredScaled(55, "YOU SURVIVED", 0xFF00DDFF, 2);
+    drawStringCenteredScaled(78, "ALL 19 LEVELS", 0xFF00AAFF, 2);
+
+    // Horizontal rule
+    for(int x = 100; x < SCREEN_WIDTH - 100; x++)
+        vram[100 * BUF_WIDTH + x] = 0xFF0088AA;
+
+    drawStringCenteredScaled(120, "CONGRATULATIONS", 0xFFFFFFFF, 2);
+
+    if((frame / 30) % 2 == 0) {
+        drawStringCentered(200, "PRESS START TO PLAY", 0xFFCCCCCC);
+    }
+}
+
 int main(int argc, char *argv[]) {
     log_debug("=== Demon Hunters Starting ===");
     log_debug("Setting up callbacks...");
@@ -931,10 +1332,10 @@ int main(int argc, char *argv[]) {
     g_audio.audio_channel = -1;
     ctx.frame_count = 0;
 
-    log_debug("Loading level 0...");
-    loadLevel(0);
-    log_debug("Starting audio...");
-    start_audio();
+    log_debug("Starting on title screen...");
+    ctx.state = STATE_TITLE;
+    ctx.frame_count = 0;
+    g_audio.audio_channel = -1;
     start_sfx();
 
     log_debug("Entering main loop...");
@@ -948,9 +1349,17 @@ int main(int argc, char *argv[]) {
         const LevelData* level_data = &all_levels[ctx.current_level];
 
         switch(ctx.state) {
+            case STATE_TITLE:
+                drawTitleScreen(ctx.frame_count);
+                if(pad.Buttons & PSP_CTRL_START) {
+                    player.lives = MAX_LIVES;
+                    loadLevel(0);
+                    start_audio();
+                }
+                break;
+
             case STATE_LEVEL_START:
-                clearScreen(0xFF000000);
-                // Show level name
+                drawLevelIntro(ctx.state_timer);
                 ctx.state_timer--;
                 if(ctx.state_timer <= 0) {
                     ctx.state = STATE_PLAYING;
@@ -966,18 +1375,18 @@ int main(int argc, char *argv[]) {
                 // Check win condition
                 if(player.kills >= level_data->kills_required) {
                     ctx.state = STATE_LEVEL_COMPLETE;
-                    ctx.state_timer = 120;
+                    ctx.state_timer = 150;
                 }
 
                 // Check lose condition
                 if(player.lives <= 0) {
                     ctx.state = STATE_GAME_OVER;
-                    ctx.state_timer = 180;
+                    ctx.state_timer = 240;
                 }
                 break;
 
             case STATE_LEVEL_COMPLETE:
-                clearScreen(0xFF004400);
+                drawLevelComplete(ctx.state_timer);
                 ctx.state_timer--;
                 if(ctx.state_timer <= 0) {
                     loadLevel(ctx.current_level + 1);
@@ -985,16 +1394,23 @@ int main(int argc, char *argv[]) {
                 break;
 
             case STATE_GAME_OVER:
-                clearScreen(0xFF440000);
+                drawGameOver(ctx.state_timer);
                 ctx.state_timer--;
-                if(ctx.state_timer <= 0) {
+                // Wait for START press or timeout
+                if((pad.Buttons & PSP_CTRL_START) && ctx.state_timer < 180) {
                     player.lives = MAX_LIVES;
                     loadLevel(0);
+                }
+                if(ctx.state_timer <= 0) {
+                    ctx.state = STATE_TITLE;
                 }
                 break;
 
             case STATE_VICTORY:
-                clearScreen(0xFF00AA00);
+                drawVictory(ctx.frame_count);
+                if(pad.Buttons & PSP_CTRL_START) {
+                    ctx.state = STATE_TITLE;
+                }
                 break;
         }
 
