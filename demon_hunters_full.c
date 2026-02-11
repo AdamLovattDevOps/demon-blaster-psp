@@ -1149,7 +1149,7 @@ void drawTitleScreen(int frame) {
     drawStringCenteredScaled(68, "HUNTERS", 0xFF33CCFF, 3);   // main
 
     // Version
-    drawStringCentered(96, "V0.05", 0xFF555555);
+    drawStringCentered(96, "V0.0.6", 0xFF555555);
 
     // Decorative rule under title
     for(int x = 140; x < SCREEN_WIDTH - 140; x++)
