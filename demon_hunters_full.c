@@ -1356,6 +1356,7 @@ int main(int argc, char *argv[]) {
     ctx.state = STATE_TITLE;
     ctx.frame_count = 0;
     g_audio.audio_channel = -1;
+    g_audio.audio_thread_running = 1;
     start_sfx();
 
     log_debug("Entering main loop...");
