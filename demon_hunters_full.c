@@ -113,7 +113,8 @@ int fps_display = 0;
 #define SFX_SAMPLES 512
 volatile int sfx_channel = -1;
 volatile int sfx_remaining = 0;
-#define SFX_DURATION 2200  // samples of gunshot noise
+volatile float sfx_phase = 0.0f;
+#define SFX_DURATION 6600  // ~300ms beefy gunshot at 22050Hz
 
 // Musical note frequencies
 float get_frequency(const char* note_str) {
@@ -141,7 +142,7 @@ float get_frequency(const char* note_str) {
     if (is_sharp) semitone++;
 
     semitone += (octave - 4) * 12;
-    return base_freq * powf(2.0f, semitone / 12.0f) * 0.5f;  // One octave lower
+    return base_freq * powf(2.0f, semitone / 12.0f) * 0.25f;  // Two octaves lower
 }
 
 // Parse music notation
@@ -205,7 +206,7 @@ int audio_thread(SceSize args, void* argp) {
             short sample = 0;
 
             if (freq > 0) {
-                float value = (sinf(g_audio.phase) > 0) ? 0.3f : -0.3f;
+                float value = (sinf(g_audio.phase) > 0) ? 0.15f : -0.15f;
                 sample = (short)(value * 32767.0f);
 
                 g_audio.phase += 2.0f * M_PI * freq / SAMPLE_RATE;
@@ -254,21 +255,39 @@ void start_audio() {
 // SFX audio thread - separate channel for gunshot
 int sfx_thread(SceSize args, void* argp) {
     short sfx_buffer[SFX_SAMPLES * 2];
-    unsigned int lfsr = 0xACE1u; // noise seed
+    unsigned int lfsr = 0xACE1u;
 
     while (g_audio.audio_thread_running) {
         if (sfx_remaining <= 0) {
-            // Silence when no SFX playing
             memset(sfx_buffer, 0, sizeof(sfx_buffer));
         } else {
             for (int i = 0; i < SFX_SAMPLES; i++) {
                 short sample = 0;
                 if (sfx_remaining > 0) {
-                    // LFSR white noise with decay envelope
+                    float t = (float)sfx_remaining / (float)SFX_DURATION; // 1.0 -> 0.0
+
+                    // Layer 1: Deep bass boom (55Hz) - cubic decay for punch
+                    float boom_env = t * t * t;
+                    float boom = sinf(sfx_phase) * boom_env;
+
+                    // Layer 2: Mid crunch (150Hz) - quadratic decay
+                    float crunch = sinf(sfx_phase * (150.0f / 55.0f)) * t * t;
+
+                    // Layer 3: Noise crack - linear decay
                     unsigned int bit = ((lfsr >> 0) ^ (lfsr >> 2) ^ (lfsr >> 3) ^ (lfsr >> 5)) & 1;
                     lfsr = (lfsr >> 1) | (bit << 15);
-                    float envelope = (float)sfx_remaining / (float)SFX_DURATION;
-                    sample = (short)((((int)(lfsr & 0xFF) - 128) * envelope) * 180);
+                    float noise = ((float)(lfsr & 0xFF) - 128.0f) / 128.0f * t;
+
+                    // Mix: heavy bass + mid body + noise sizzle
+                    float mixed = boom * 0.55f + crunch * 0.25f + noise * 0.20f;
+
+                    // Soft clip for extra saturation/grit
+                    if (mixed > 0.85f) mixed = 0.85f + (mixed - 0.85f) * 0.15f;
+                    if (mixed < -0.85f) mixed = -0.85f + (mixed + 0.85f) * 0.15f;
+
+                    sample = (short)(mixed * 32700.0f);
+
+                    sfx_phase += 2.0f * M_PI * 55.0f / SAMPLE_RATE;
                     sfx_remaining--;
                 }
                 sfx_buffer[i * 2] = sample;
@@ -290,6 +309,7 @@ void start_sfx() {
 }
 
 void play_shoot_sfx() {
+    sfx_phase = 0.0f;
     sfx_remaining = SFX_DURATION;
 }
 
