@@ -438,6 +438,7 @@ static const unsigned char font_data[][5] = {
     {0x60,0x30,0x18,0x0C,0x06}, // / (38)
     {0x10,0x10,0x10,0x10,0x10}, // - (39)
     {0x00,0xC0,0xC0,0x00,0x00}, // . (40)
+    {0x00,0x02,0x06,0x04,0x00}, // ' (41)
 };
 
 static int fontIndex(char c) {
@@ -449,6 +450,7 @@ static int fontIndex(char c) {
     if(c == '/') return 38;
     if(c == '-') return 39;
     if(c == '.') return 40;
+    if(c == '\'') return 41;
     return -1;
 }
 
@@ -1198,27 +1200,30 @@ void drawTitleScreen(int frame) {
 void drawLevelIntro(int timer) {
     unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
     const LevelData* level = &all_levels[ctx.current_level];
+    unsigned int tc = level->theme_color;
+    int tr = tc & 0xFF, tg = (tc >> 8) & 0xFF, tb = (tc >> 16) & 0xFF;
 
     // Fade in: 120 frames total, first 30 fade in
     int alpha = (120 - timer);
     if(alpha > 30) alpha = 30;
     int shade = (alpha * 255) / 30;
 
-    // Full screen dark background with subtle gradient
+    // Full screen background tinted with theme color
     for(int y = 0; y < SCREEN_HEIGHT; y++) {
         int s = 5 + (y * 8) / SCREEN_HEIGHT;
-        unsigned int bg = 0xFF000000 | ((s/3) << 16) | ((s/4) << 8) | s;
+        unsigned int bg = 0xFF000000 | ((s * tb / 255) << 16) | ((s * tg / 255) << 8) | (s * tr / 255);
         unsigned int* row = vram + y * BUF_WIDTH;
         for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = bg;
     }
 
-    // Horizontal rules
+    // Horizontal rules in theme color (dimmed)
+    unsigned int ruleCol = 0xFF000000 | ((tb / 4) << 16) | ((tg / 4) << 8) | (tr / 4);
     for(int x = 60; x < SCREEN_WIDTH - 60; x++) {
-        vram[70 * BUF_WIDTH + x] = 0xFF002244;
-        vram[200 * BUF_WIDTH + x] = 0xFF002244;
+        vram[70 * BUF_WIDTH + x] = ruleCol;
+        vram[200 * BUF_WIDTH + x] = ruleCol;
     }
 
-    // Level number - centered, scale 3
+    // Level number - centered, scale 3, in theme color
     char lvlNum[12];
     lvlNum[0] = 'L'; lvlNum[1] = 'E'; lvlNum[2] = 'V'; lvlNum[3] = 'E'; lvlNum[4] = 'L';
     lvlNum[5] = ' ';
@@ -1226,16 +1231,16 @@ void drawLevelIntro(int timer) {
     lvlNum[7] = '0' + ((ctx.current_level + 1) % 10);
     lvlNum[8] = '\0';
 
-    unsigned int textCol = 0xFF000000 | ((shade * 0x22 / 255) << 16) | ((shade * 0x44 / 255) << 8) | (shade * 0xCC / 255);
+    unsigned int textCol = 0xFF000000 | ((shade * tb / 255) << 16) | ((shade * tg / 255) << 8) | (shade * tr / 255);
     drawStringCenteredScaled(90, lvlNum, textCol, 3);
 
-    // Level name - centered, scale 2
-    unsigned int nameCol = 0xFF000000 | ((shade * 0x88 / 255) << 16) | ((shade * 0xCC / 255) << 8) | (shade * 0xFF / 255);
+    // Level name - centered, scale 2, bright white faded in
+    unsigned int nameCol = 0xFF000000 | ((shade * 0xDD / 255) << 16) | ((shade * 0xEE / 255) << 8) | (shade * 0xFF / 255);
     drawStringCenteredScaled(125, level->name, nameCol, 2);
 
-    // "GET READY" blinking near the end - centered
+    // "GET READY" blinking near the end - in theme color
     if(timer < 60 && (timer / 10) % 2 == 0) {
-        drawStringCenteredScaled(165, "GET READY", 0xFF00FFFF, 2);
+        drawStringCenteredScaled(165, "GET READY", tc, 2);
     }
 }
 
@@ -1243,22 +1248,28 @@ void drawLevelIntro(int timer) {
 void drawLevelComplete(int timer) {
     unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
     const LevelData* level = &all_levels[ctx.current_level];
+    unsigned int tc = level->theme_color;
+    int tr = tc & 0xFF, tg = (tc >> 8) & 0xFF, tb = (tc >> 16) & 0xFF;
 
-    // Full screen dark green gradient
+    // Full screen background tinted with theme color
     for(int y = 0; y < SCREEN_HEIGHT; y++) {
-        int g = 8 + (y * 15) / SCREEN_HEIGHT;
+        int s = 8 + (y * 15) / SCREEN_HEIGHT;
+        unsigned int bg = 0xFF000000 | ((s * tb / 255) << 16) | ((s * tg / 255) << 8) | (s * tr / 255);
         unsigned int* row = vram + y * BUF_WIDTH;
-        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF000000 | (g << 8);
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = bg;
     }
 
-    drawStringCenteredScaled(30, "LEVEL COMPLETE", 0xFF44FF44, 2);
+    // "LEVEL COMPLETE" in bright theme color
+    unsigned int brightTC = 0xFF000000 | (((tb + 255) / 2) << 16) | (((tg + 255) / 2) << 8) | ((tr + 255) / 2);
+    drawStringCenteredScaled(30, "LEVEL COMPLETE", brightTC, 2);
 
-    // Horizontal rule
+    // Horizontal rule in theme color
+    unsigned int ruleCol = 0xFF000000 | ((tb / 3) << 16) | ((tg / 3) << 8) | (tr / 3);
     for(int x = 80; x < SCREEN_WIDTH - 80; x++)
-        vram[56 * BUF_WIDTH + x] = 0xFF226622;
+        vram[56 * BUF_WIDTH + x] = ruleCol;
 
     // Level name
-    drawStringCentered(68, level->name, 0xFF88FFAA);
+    drawStringCentered(68, level->name, 0xFFDDEEFF);
 
     // Stats - centered
     char killStr[20];
@@ -1270,20 +1281,20 @@ void drawLevelComplete(int timer) {
     killStr[9] = '0' + (level->kills_required / 10);
     killStr[10] = '0' + (level->kills_required % 10);
     killStr[11] = '\0';
-    drawStringCenteredScaled(100, killStr, 0xFF00CCFF, 2);
+    drawStringCenteredScaled(100, killStr, tc, 2);
 
     char livesStr[12];
     livesStr[0] = 'L'; livesStr[1] = 'I'; livesStr[2] = 'V'; livesStr[3] = 'E'; livesStr[4] = 'S';
     livesStr[5] = ' ';
     livesStr[6] = '0' + player.lives;
     livesStr[7] = '\0';
-    drawStringCenteredScaled(125, livesStr, 0xFF4444FF, 2);
+    drawStringCenteredScaled(125, livesStr, 0xFFDDDDDD, 2);
 
-    // Progress bar - wider, centered
+    // Progress bar - wider, centered, in theme color
     int progress = ((ctx.current_level + 1) * 280) / TOTAL_LEVELS;
     drawRect(100, 160, 280, 10, 0xFF222222);
-    drawRect(100, 160, progress, 10, 0xFF44AA44);
-    drawRect(100, 160, 280, 1, 0xFF66CC66);
+    drawRect(100, 160, progress, 10, tc);
+    drawRect(100, 160, 280, 1, brightTC);
 
     // "PRESS START" blinking - centered
     if(timer < 80 && (timer / 15) % 2 == 0) {

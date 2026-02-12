@@ -1,6 +1,6 @@
 # Demon Blaster - 9 Level Version
 # GAME_VERSION is the single source of truth - keep in sync with git tag
-GAME_VERSION = 0.0.9
+GAME_VERSION = 0.0.10
 
 TARGET = demon_blaster
 OBJS = demon_blaster.o

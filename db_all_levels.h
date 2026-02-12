@@ -1,7 +1,7 @@
 #ifndef DB_ALL_LEVELS_H
 #define DB_ALL_LEVELS_H
 
-/* All 19 levels from Domestic Bliss - extracted for PSP version */
+/* 9 levels - extracted for PSP version */
 /* This file uses simple C arrays and structs, no C++ features */
 
 typedef struct {
@@ -21,6 +21,7 @@ typedef struct {
     int enemy_count;
     int kills_required;
     const char* music;
+    unsigned int theme_color;  /* ABGR8888 accent color for UI screens */
 } LevelData;
 
 /* LEVEL 1 */
@@ -374,97 +375,51 @@ static const char level9_music[] =
     "R:480 B6:120 C7:120 B6:120 A6:120 B6:1920";
 
 /* Array of all levels */
-/* Array of all levels */
 static const LevelData all_levels[] = {
-    /* Level 1 */
-    {
-        "THE CRYPT",
-        16, 16,
-        level1_map,
-        2.5f, 2.5f, 1.5f,
-        level1_enemies, 12,
-        10,
-        level1_music
+    /* Level 1 */ {
+        "9 O'CLOCK ARRIVAL", 16, 16, level1_map,
+        2.5f, 2.5f, 1.5f, level1_enemies, 12, 10, level1_music,
+        0xFF4444CC  /* warm red */
     },
-    /* Level 2 */
-    {
-        "DARK CROSSING",
-        20, 20,
-        level2_map,
-        10.5f, 10.5f, 0.0f,
-        level2_enemies, 14,
-        12,
-        level2_music
+    /* Level 2 */ {
+        "DARK CROSSING", 20, 20, level2_map,
+        10.5f, 10.5f, 0.0f, level2_enemies, 14, 12, level2_music,
+        0xFFCC8822  /* deep blue */
     },
-    /* Level 3 */
-    {
-        "THE LABYRINTH",
-        24, 24,
-        level3_map,
-        5.5f, 5.5f, 0.0f,
-        level3_enemies, 16,
-        14,
-        level3_music
+    /* Level 3 */ {
+        "THE LABYRINTH", 24, 24, level3_map,
+        5.5f, 5.5f, 0.0f, level3_enemies, 16, 14, level3_music,
+        0xFF22AA44  /* green */
     },
-    /* Level 4 */
-    {
-        "BLOOD CORRIDOR",
-        20, 20,
-        level4_map,
-        10.5f, 17.5f, 0.0f,
-        level4_enemies, 18,
-        16,
-        level4_music
+    /* Level 4 */ {
+        "BLOOD CORRIDOR", 20, 20, level4_map,
+        10.5f, 17.5f, 0.0f, level4_enemies, 18, 16, level4_music,
+        0xFF2222DD  /* blood red */
     },
-    /* Level 5 */
-    {
-        "THE ARENA",
-        26, 26,
-        level5_map,
-        13.0f, 13.0f, 0.0f,
-        level5_enemies, 20,
-        18,
-        level5_music
+    /* Level 5 */ {
+        "THE ARENA", 26, 26, level5_map,
+        13.0f, 13.0f, 0.0f, level5_enemies, 20, 18, level5_music,
+        0xFF44AADD  /* gold */
     },
-    /* Level 6 */
-    {
-        "SHADOW GROUNDS",
-        22, 22,
-        level6_map,
-        11.0f, 11.0f, 0.0f,
-        level6_enemies, 22,
-        20,
-        level6_music
+    /* Level 6 */ {
+        "SHADOW GROUNDS", 22, 22, level6_map,
+        11.0f, 11.0f, 0.0f, level6_enemies, 22, 20, level6_music,
+        0xFFAA6644  /* teal */
     },
-    /* Level 7 */
-    {
-        "HELLPIT",
-        24, 24,
-        level7_map,
-        12.0f, 12.0f, 0.0f,
-        level7_enemies, 24,
-        22,
-        level7_music
+    /* Level 7 */ {
+        "HELLPIT", 24, 24, level7_map,
+        12.0f, 12.0f, 0.0f, level7_enemies, 24, 22, level7_music,
+        0xFF0044FF  /* bright red-orange */
     },
-    /* Level 8 */
-    {
-        "THE COMPOUND",
-        20, 20,
-        level8_map,
-        10.0f, 10.0f, 0.0f,
-        level8_enemies, 26,
-        24,
-        level8_music
+    /* Level 8 */ {
+        "THE COMPOUND", 20, 20, level8_map,
+        10.0f, 10.0f, 0.0f, level8_enemies, 26, 24, level8_music,
+        0xFFAAAA44  /* cyan */
     },
-    /* Level 9 */
-    {
-        "DEMON FORTRESS",
-        28, 28,
-        level9_map,
-        14.0f, 14.0f, 0.0f,
-        level9_enemies, 28,
-        26,
-        level9_music
+    /* Level 9 */ {
+        "DEMON FORTRESS", 28, 28, level9_map,
+        14.0f, 14.0f, 0.0f, level9_enemies, 28, 26, level9_music,
+        0xFF44CCFF  /* bright yellow */
     }
 };
 

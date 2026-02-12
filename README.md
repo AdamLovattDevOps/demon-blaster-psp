@@ -1,6 +1,6 @@
 # Demon Blaster PSP
 
-Raycaster FPS homebrew for Sony PSP. 19 levels, procedural brick textures, minimap, HUD, distance-sorted sprites with z-buffer occlusion, and chiptune music per level.
+Raycaster FPS homebrew for Sony PSP. 9 levels, procedural brick textures, minimap, HUD, distance-sorted sprites with z-buffer occlusion, and chiptune music per level.
 
 ## Build
 
@@ -40,7 +40,7 @@ Requires custom firmware (tested on 6.60 PRO-C2).
 
 ```
 demon_blaster.c   - Game source (single file)
-db_all_levels.h   - 19 level definitions (maps, enemies, music)
+db_all_levels.h   - 9 level definitions (maps, enemies, music)
 Makefile           - PSP SDK build config
 ICON0.PNG          - XMB game icon (144x80)
 build.bat          - Windows build script
