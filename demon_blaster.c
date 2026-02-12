@@ -1,4 +1,4 @@
-// Demon Blaster - Full 19 Level PSP Version
+// Demon Blaster - 9 Level PSP Version
 // All levels, music, and shooting mechanics
 
 #include <pspkernel.h>
@@ -1329,7 +1329,7 @@ void drawVictory(int frame) {
     }
 
     drawStringCenteredScaled(55, "YOU SURVIVED", 0xFF00DDFF, 2);
-    drawStringCenteredScaled(78, "ALL 19 LEVELS", 0xFF00AAFF, 2);
+    drawStringCenteredScaled(78, "ALL 9 LEVELS", 0xFF00AAFF, 2);
 
     // Horizontal rule
     for(int x = 100; x < SCREEN_WIDTH - 100; x++)
