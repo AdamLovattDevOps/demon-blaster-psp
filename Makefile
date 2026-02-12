@@ -1,6 +1,6 @@
 # Demon Hunters - Full 19 Level Version
 # GAME_VERSION is the single source of truth - keep in sync with git tag
-GAME_VERSION = 0.0.7
+GAME_VERSION = 0.0.8
 
 TARGET = demon_hunters_full
 OBJS = demon_hunters_full.o

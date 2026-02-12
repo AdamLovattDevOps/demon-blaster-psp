@@ -120,6 +120,8 @@ volatile float sfx_phase = 0.0f;
 volatile int sfx_type = SFX_TYPE_BLASTER;
 #define SFX_DURATION_BLASTER 3300   // ~150ms snappy phaser
 #define SFX_DURATION_LEVELUP 8800   // ~400ms ascending arpeggio
+#define SHOOT_COOLDOWN_FRAMES 10    // ~166ms between shots
+volatile int shoot_cooldown = 0;
 
 // Musical note frequencies
 float get_frequency(const char* note_str) {
@@ -225,8 +227,10 @@ int audio_thread(SceSize args, void* argp) {
             g_audio.samples_remaining--;
         }
 
+        // Duck music volume when SFX is playing so blaster cuts through cleanly
+        int music_vol = (sfx_remaining > 0) ? (PSP_AUDIO_VOLUME_MAX / 3) : PSP_AUDIO_VOLUME_MAX;
         sceAudioOutputPannedBlocking(g_audio.audio_channel,
-            PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, audio_buffer);
+            music_vol, music_vol, audio_buffer);
     }
 
     return 0;
@@ -263,43 +267,47 @@ int sfx_thread(SceSize args, void* argp) {
 
     while (g_audio.audio_thread_running) {
         if (sfx_remaining <= 0) {
+            // Idle: output silence at zero volume, minimal CPU
             memset(sfx_buffer, 0, sizeof(sfx_buffer));
-        } else {
-            for (int i = 0; i < SFX_SAMPLES; i++) {
-                short sample = 0;
-                if (sfx_remaining > 0) {
-                    float t = (float)sfx_remaining / (float)sfx_duration; // 1.0 -> 0.0
-
-                    if (sfx_type == SFX_TYPE_BLASTER) {
-                        // Sci-fi phaser: frequency sweep 900Hz -> 100Hz
-                        float sweep = 100.0f + 800.0f * t;
-                        float env = t * t;
-                        float tone = sinf(sfx_phase) * env;
-                        float harmonic = sinf(sfx_phase * 2.0f) * env * 0.3f;
-                        float buzz = sinf(sfx_phase * 7.0f) * env * 0.08f;
-                        float mixed = (tone + harmonic + buzz) * 0.9f;
-                        sample = (short)(mixed * 32700.0f);
-                        sfx_phase += 2.0f * M_PI * sweep / SAMPLE_RATE;
-                    } else {
-                        // Level-up: ascending arpeggio C5 -> E5 -> G5 -> C6
-                        float progress = 1.0f - t; // 0.0 -> 1.0
-                        float freq;
-                        if (progress < 0.25f) freq = 523.0f;       // C5
-                        else if (progress < 0.50f) freq = 659.0f;  // E5
-                        else if (progress < 0.75f) freq = 784.0f;  // G5
-                        else freq = 1047.0f;                        // C6
-                        float env = (t > 0.1f) ? 1.0f : t / 0.1f;
-                        float tone = sinf(sfx_phase) * env * 0.7f;
-                        float shimmer = sinf(sfx_phase * 3.0f) * env * 0.15f;
-                        sample = (short)((tone + shimmer) * 32700.0f);
-                        sfx_phase += 2.0f * M_PI * freq / SAMPLE_RATE;
-                    }
-                    sfx_remaining--;
-                }
-                sfx_buffer[i * 2] = sample;
-                sfx_buffer[i * 2 + 1] = sample;
-            }
+            sceAudioOutputPannedBlocking(sfx_channel, 0, 0, sfx_buffer);
+            continue;
         }
+
+        for (int i = 0; i < SFX_SAMPLES; i++) {
+            short sample = 0;
+            if (sfx_remaining > 0) {
+                float t = (float)sfx_remaining / (float)sfx_duration; // 1.0 -> 0.0
+
+                if (sfx_type == SFX_TYPE_BLASTER) {
+                    // Sci-fi phaser: frequency sweep 900Hz -> 100Hz
+                    float sweep = 100.0f + 800.0f * t;
+                    float env = t * t;
+                    float tone = sinf(sfx_phase) * env;
+                    float harmonic = sinf(sfx_phase * 2.0f) * env * 0.3f;
+                    float buzz = sinf(sfx_phase * 7.0f) * env * 0.08f;
+                    float mixed = (tone + harmonic + buzz) * 0.9f;
+                    sample = (short)(mixed * 32700.0f);
+                    sfx_phase += 2.0f * M_PI * sweep / SAMPLE_RATE;
+                } else {
+                    // Level-up: ascending arpeggio C5 -> E5 -> G5 -> C6
+                    float progress = 1.0f - t; // 0.0 -> 1.0
+                    float freq;
+                    if (progress < 0.25f) freq = 523.0f;       // C5
+                    else if (progress < 0.50f) freq = 659.0f;  // E5
+                    else if (progress < 0.75f) freq = 784.0f;  // G5
+                    else freq = 1047.0f;                        // C6
+                    float env2 = (t > 0.1f) ? 1.0f : t / 0.1f;
+                    float tone = sinf(sfx_phase) * env2 * 0.7f;
+                    float shimmer = sinf(sfx_phase * 3.0f) * env2 * 0.15f;
+                    sample = (short)((tone + shimmer) * 32700.0f);
+                    sfx_phase += 2.0f * M_PI * freq / SAMPLE_RATE;
+                }
+                sfx_remaining--;
+            }
+            sfx_buffer[i * 2] = sample;
+            sfx_buffer[i * 2 + 1] = sample;
+        }
+
         sceAudioOutputPannedBlocking(sfx_channel,
             PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, sfx_buffer);
     }
@@ -309,16 +317,19 @@ int sfx_thread(SceSize args, void* argp) {
 void start_sfx() {
     sfx_channel = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, SFX_SAMPLES, PSP_AUDIO_FORMAT_STEREO);
     if (sfx_channel >= 0) {
-        int thid = sceKernelCreateThread("sfx_thread", sfx_thread, 0x12, 0x10000, 0, NULL);
+        // Priority 0x16: lower than music thread (0x12) so music timing is never starved
+        int thid = sceKernelCreateThread("sfx_thread", sfx_thread, 0x16, 0x10000, 0, NULL);
         if (thid >= 0) sceKernelStartThread(thid, 0, NULL);
     }
 }
 
 void play_shoot_sfx() {
+    if (shoot_cooldown > 0) return;  // let current SFX finish before retriggering
     sfx_phase = 0.0f;
     sfx_type = SFX_TYPE_BLASTER;
     sfx_duration = SFX_DURATION_BLASTER;
     sfx_remaining = SFX_DURATION_BLASTER;
+    shoot_cooldown = SHOOT_COOLDOWN_FRAMES;
 }
 
 void play_levelup_sfx() {
@@ -1437,6 +1448,7 @@ int main(int argc, char *argv[]) {
         }
 
         ctx.frame_count++;
+        if (shoot_cooldown > 0) shoot_cooldown--;
 
         // FPS calculation
         fps_frame_count++;
