@@ -1,9 +1,9 @@
-# Demon Hunters - Full 19 Level Version
+# Demon Blaster - Full 19 Level Version
 # GAME_VERSION is the single source of truth - keep in sync with git tag
 GAME_VERSION = 0.0.8
 
-TARGET = demon_hunters_full
-OBJS = demon_hunters_full.o
+TARGET = demon_blaster
+OBJS = demon_blaster.o
 
 INCDIR =
 CFLAGS = -O2 -G0 -Wall -ffast-math -DGAME_VERSION='"V$(GAME_VERSION)"'
@@ -20,7 +20,7 @@ PSP_FW_VERSION = 500
 PSP_LARGE_MEMORY = 1
 
 EXTRA_TARGETS = EBOOT.PBP
-PSP_EBOOT_TITLE = Demon Hunters v$(GAME_VERSION)
+PSP_EBOOT_TITLE = Demon Blaster v$(GAME_VERSION)
 PSP_EBOOT_ICON = ICON0.PNG
 
 # Use PSPSDK build system

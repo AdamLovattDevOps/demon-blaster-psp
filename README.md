@@ -1,4 +1,4 @@
-# Demon Hunters PSP
+# Demon Blaster PSP
 
 Raycaster FPS homebrew for Sony PSP. 19 levels, procedural brick textures, minimap, HUD, distance-sorted sprites with z-buffer occlusion, and chiptune music per level.
 
@@ -22,7 +22,7 @@ Output: `EBOOT.PBP`
 
 Copy to memory stick:
 ```
-PSP/GAME/DemonHunters/EBOOT.PBP
+PSP/GAME/DemonBlaster/EBOOT.PBP
 ```
 
 Requires custom firmware (tested on 6.60 PRO-C2).
@@ -39,11 +39,11 @@ Requires custom firmware (tested on 6.60 PRO-C2).
 ## Project Structure
 
 ```
-demon_hunters_full.c  - Game source (single file)
-dh_all_levels.h       - 19 level definitions (maps, enemies, music)
-Makefile              - PSP SDK build config
-ICON0.PNG             - XMB game icon (144x80)
-build.bat             - Windows build script
+demon_blaster.c   - Game source (single file)
+db_all_levels.h   - 19 level definitions (maps, enemies, music)
+Makefile           - PSP SDK build config
+ICON0.PNG          - XMB game icon (144x80)
+build.bat          - Windows build script
 ```
 
 ## Key Build Settings

@@ -1,4 +1,4 @@
-// Demon Hunters - Full 19 Level PSP Version
+// Demon Blaster - Full 19 Level PSP Version
 // All levels, music, and shooting mechanics
 
 #include <pspkernel.h>
@@ -11,9 +11,9 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "dh_all_levels.h"
+#include "db_all_levels.h"
 
-PSP_MODULE_INFO("Demon Hunters", 0, 0, 4);
+PSP_MODULE_INFO("Demon Blaster", 0, 0, 4);
 
 // Debug logging to memory stick
 FILE* debug_log = NULL;
@@ -1168,11 +1168,11 @@ void drawTitleScreen(int frame) {
     drawStringScaled(dx + 1, 39, "DEMON", 0xFF2244DD, 3);   // highlight
     drawStringCenteredScaled(40, "DEMON", 0xFF2244DD, 3);    // main
 
-    // "HUNTERS" - scaled 3x, centered, with shadow
-    drawStringCenteredScaled(68, "HUNTERS", 0xFF22AADD, 3);  // shadow
-    int hx = (SCREEN_WIDTH - strPixelWidth("HUNTERS", 3)) / 2;
-    drawStringScaled(hx + 1, 67, "HUNTERS", 0xFF33CCFF, 3);  // highlight
-    drawStringCenteredScaled(68, "HUNTERS", 0xFF33CCFF, 3);   // main
+    // "BLASTER" - scaled 3x, centered, with shadow
+    drawStringCenteredScaled(68, "BLASTER", 0xFF22AADD, 3);  // shadow
+    int hx = (SCREEN_WIDTH - strPixelWidth("BLASTER", 3)) / 2;
+    drawStringScaled(hx + 1, 67, "BLASTER", 0xFF33CCFF, 3);  // highlight
+    drawStringCenteredScaled(68, "BLASTER", 0xFF33CCFF, 3);   // main
 
     // Version
     drawStringCentered(96, GAME_VERSION, 0xFF555555);
@@ -1343,7 +1343,7 @@ void drawVictory(int frame) {
 }
 
 int main(int argc, char *argv[]) {
-    log_debug("=== Demon Hunters Starting ===");
+    log_debug("=== Demon Blaster Starting ===");
     log_debug("Setting up callbacks...");
     SetupCallbacks();
 

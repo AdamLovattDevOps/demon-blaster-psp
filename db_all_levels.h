@@ -1,5 +1,5 @@
-#ifndef DH_ALL_LEVELS_H
-#define DH_ALL_LEVELS_H
+#ifndef DB_ALL_LEVELS_H
+#define DB_ALL_LEVELS_H
 
 /* All 19 levels from Domestic Bliss - extracted for PSP version */
 /* This file uses simple C arrays and structs, no C++ features */
@@ -1084,4 +1084,4 @@ static const LevelData all_levels[] = {
 
 #define TOTAL_LEVELS 19
 
-#endif /* DH_ALL_LEVELS_H */
+#endif /* DB_ALL_LEVELS_H */

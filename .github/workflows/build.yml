@@ -20,5 +20,5 @@ jobs:
       - name: Upload EBOOT.PBP
         uses: actions/upload-artifact@v4
         with:
-          name: DemonHunters-EBOOT
+          name: DemonBlaster-EBOOT
           path: EBOOT.PBP
