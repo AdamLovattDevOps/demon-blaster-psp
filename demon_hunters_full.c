@@ -109,12 +109,17 @@ unsigned int fps_last_tick = 0;
 int fps_frame_count = 0;
 int fps_display = 0;
 
-// Shoot SFX state
+// SFX state
 #define SFX_SAMPLES 512
 volatile int sfx_channel = -1;
 volatile int sfx_remaining = 0;
+volatile int sfx_duration = 3300;
 volatile float sfx_phase = 0.0f;
-#define SFX_DURATION 6600  // ~300ms beefy gunshot at 22050Hz
+#define SFX_TYPE_BLASTER 0
+#define SFX_TYPE_LEVELUP 1
+volatile int sfx_type = SFX_TYPE_BLASTER;
+#define SFX_DURATION_BLASTER 3300   // ~150ms snappy phaser
+#define SFX_DURATION_LEVELUP 8800   // ~400ms ascending arpeggio
 
 // Musical note frequencies
 float get_frequency(const char* note_str) {
@@ -252,10 +257,9 @@ void start_audio() {
     }
 }
 
-// SFX audio thread - separate channel for gunshot
+// SFX audio thread - generates blaster and level-up sounds
 int sfx_thread(SceSize args, void* argp) {
     short sfx_buffer[SFX_SAMPLES * 2];
-    unsigned int lfsr = 0xACE1u;
 
     while (g_audio.audio_thread_running) {
         if (sfx_remaining <= 0) {
@@ -264,30 +268,32 @@ int sfx_thread(SceSize args, void* argp) {
             for (int i = 0; i < SFX_SAMPLES; i++) {
                 short sample = 0;
                 if (sfx_remaining > 0) {
-                    float t = (float)sfx_remaining / (float)SFX_DURATION; // 1.0 -> 0.0
+                    float t = (float)sfx_remaining / (float)sfx_duration; // 1.0 -> 0.0
 
-                    // Layer 1: Deep bass boom (55Hz) - cubic decay for punch
-                    float boom_env = t * t * t;
-                    float boom = sinf(sfx_phase) * boom_env;
-
-                    // Layer 2: Mid crunch (150Hz) - quadratic decay
-                    float crunch = sinf(sfx_phase * (150.0f / 55.0f)) * t * t;
-
-                    // Layer 3: Noise crack - linear decay
-                    unsigned int bit = ((lfsr >> 0) ^ (lfsr >> 2) ^ (lfsr >> 3) ^ (lfsr >> 5)) & 1;
-                    lfsr = (lfsr >> 1) | (bit << 15);
-                    float noise = ((float)(lfsr & 0xFF) - 128.0f) / 128.0f * t;
-
-                    // Mix: heavy bass + mid body + noise sizzle
-                    float mixed = boom * 0.55f + crunch * 0.25f + noise * 0.20f;
-
-                    // Soft clip for extra saturation/grit
-                    if (mixed > 0.85f) mixed = 0.85f + (mixed - 0.85f) * 0.15f;
-                    if (mixed < -0.85f) mixed = -0.85f + (mixed + 0.85f) * 0.15f;
-
-                    sample = (short)(mixed * 32700.0f);
-
-                    sfx_phase += 2.0f * M_PI * 55.0f / SAMPLE_RATE;
+                    if (sfx_type == SFX_TYPE_BLASTER) {
+                        // Sci-fi phaser: frequency sweep 900Hz -> 100Hz
+                        float sweep = 100.0f + 800.0f * t;
+                        float env = t * t;
+                        float tone = sinf(sfx_phase) * env;
+                        float harmonic = sinf(sfx_phase * 2.0f) * env * 0.3f;
+                        float buzz = sinf(sfx_phase * 7.0f) * env * 0.08f;
+                        float mixed = (tone + harmonic + buzz) * 0.9f;
+                        sample = (short)(mixed * 32700.0f);
+                        sfx_phase += 2.0f * M_PI * sweep / SAMPLE_RATE;
+                    } else {
+                        // Level-up: ascending arpeggio C5 -> E5 -> G5 -> C6
+                        float progress = 1.0f - t; // 0.0 -> 1.0
+                        float freq;
+                        if (progress < 0.25f) freq = 523.0f;       // C5
+                        else if (progress < 0.50f) freq = 659.0f;  // E5
+                        else if (progress < 0.75f) freq = 784.0f;  // G5
+                        else freq = 1047.0f;                        // C6
+                        float env = (t > 0.1f) ? 1.0f : t / 0.1f;
+                        float tone = sinf(sfx_phase) * env * 0.7f;
+                        float shimmer = sinf(sfx_phase * 3.0f) * env * 0.15f;
+                        sample = (short)((tone + shimmer) * 32700.0f);
+                        sfx_phase += 2.0f * M_PI * freq / SAMPLE_RATE;
+                    }
                     sfx_remaining--;
                 }
                 sfx_buffer[i * 2] = sample;
@@ -310,7 +316,16 @@ void start_sfx() {
 
 void play_shoot_sfx() {
     sfx_phase = 0.0f;
-    sfx_remaining = SFX_DURATION;
+    sfx_type = SFX_TYPE_BLASTER;
+    sfx_duration = SFX_DURATION_BLASTER;
+    sfx_remaining = SFX_DURATION_BLASTER;
+}
+
+void play_levelup_sfx() {
+    sfx_phase = 0.0f;
+    sfx_type = SFX_TYPE_LEVELUP;
+    sfx_duration = SFX_DURATION_LEVELUP;
+    sfx_remaining = SFX_DURATION_LEVELUP;
 }
 
 // Exit callback
@@ -1178,29 +1193,21 @@ void drawLevelIntro(int timer) {
     if(alpha > 30) alpha = 30;
     int shade = (alpha * 255) / 30;
 
-    // Black background
+    // Full screen dark background with subtle gradient
     for(int y = 0; y < SCREEN_HEIGHT; y++) {
+        int s = 5 + (y * 8) / SCREEN_HEIGHT;
+        unsigned int bg = 0xFF000000 | ((s/3) << 16) | ((s/4) << 8) | s;
         unsigned int* row = vram + y * BUF_WIDTH;
-        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF000000;
+        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = bg;
     }
 
-    // Top/bottom bars (cinematic)
-    for(int y = 0; y < 40; y++) {
-        unsigned int* row = vram + y * BUF_WIDTH;
-        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF111111;
-    }
-    for(int y = SCREEN_HEIGHT - 40; y < SCREEN_HEIGHT; y++) {
-        unsigned int* row = vram + y * BUF_WIDTH;
-        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF111111;
+    // Horizontal rules
+    for(int x = 60; x < SCREEN_WIDTH - 60; x++) {
+        vram[70 * BUF_WIDTH + x] = 0xFF002244;
+        vram[200 * BUF_WIDTH + x] = 0xFF002244;
     }
 
-    // Horizontal rule
-    for(int x = 80; x < SCREEN_WIDTH - 80; x++) {
-        vram[85 * BUF_WIDTH + x] = 0xFF002244;
-        vram[170 * BUF_WIDTH + x] = 0xFF002244;
-    }
-
-    // Level number - centered, scale 2
+    // Level number - centered, scale 3
     char lvlNum[12];
     lvlNum[0] = 'L'; lvlNum[1] = 'E'; lvlNum[2] = 'V'; lvlNum[3] = 'E'; lvlNum[4] = 'L';
     lvlNum[5] = ' ';
@@ -1209,15 +1216,15 @@ void drawLevelIntro(int timer) {
     lvlNum[8] = '\0';
 
     unsigned int textCol = 0xFF000000 | ((shade * 0x22 / 255) << 16) | ((shade * 0x44 / 255) << 8) | (shade * 0xCC / 255);
-    drawStringCenteredScaled(100, lvlNum, textCol, 2);
+    drawStringCenteredScaled(90, lvlNum, textCol, 3);
 
-    // Level name - centered
+    // Level name - centered, scale 2
     unsigned int nameCol = 0xFF000000 | ((shade * 0x88 / 255) << 16) | ((shade * 0xCC / 255) << 8) | (shade * 0xFF / 255);
-    drawStringCentered(128, level->name, nameCol);
+    drawStringCenteredScaled(125, level->name, nameCol, 2);
 
     // "GET READY" blinking near the end - centered
     if(timer < 60 && (timer / 10) % 2 == 0) {
-        drawStringCentered(150, "GET READY", 0xFF00FFFF);
+        drawStringCenteredScaled(165, "GET READY", 0xFF00FFFF, 2);
     }
 }
 
@@ -1226,28 +1233,21 @@ void drawLevelComplete(int timer) {
     unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
     const LevelData* level = &all_levels[ctx.current_level];
 
-    // Dark green tinted background
+    // Full screen dark green gradient
     for(int y = 0; y < SCREEN_HEIGHT; y++) {
-        int g = 15 + (y * 10) / SCREEN_HEIGHT;
+        int g = 8 + (y * 15) / SCREEN_HEIGHT;
         unsigned int* row = vram + y * BUF_WIDTH;
         for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF000000 | (g << 8);
     }
 
-    // Cinematic bars
-    for(int y = 0; y < 40; y++) {
-        unsigned int* row = vram + y * BUF_WIDTH;
-        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF0A0A0A;
-    }
-    for(int y = SCREEN_HEIGHT - 40; y < SCREEN_HEIGHT; y++) {
-        unsigned int* row = vram + y * BUF_WIDTH;
-        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF0A0A0A;
-    }
-
-    drawStringCenteredScaled(65, "LEVEL COMPLETE", 0xFF44FF44, 2);
+    drawStringCenteredScaled(30, "LEVEL COMPLETE", 0xFF44FF44, 2);
 
     // Horizontal rule
-    for(int x = 100; x < SCREEN_WIDTH - 100; x++)
-        vram[90 * BUF_WIDTH + x] = 0xFF226622;
+    for(int x = 80; x < SCREEN_WIDTH - 80; x++)
+        vram[56 * BUF_WIDTH + x] = 0xFF226622;
+
+    // Level name
+    drawStringCentered(68, level->name, 0xFF88FFAA);
 
     // Stats - centered
     char killStr[20];
@@ -1259,24 +1259,24 @@ void drawLevelComplete(int timer) {
     killStr[9] = '0' + (level->kills_required / 10);
     killStr[10] = '0' + (level->kills_required % 10);
     killStr[11] = '\0';
-    drawStringCentered(110, killStr, 0xFF00CCFF);
+    drawStringCenteredScaled(100, killStr, 0xFF00CCFF, 2);
 
     char livesStr[12];
     livesStr[0] = 'L'; livesStr[1] = 'I'; livesStr[2] = 'V'; livesStr[3] = 'E'; livesStr[4] = 'S';
     livesStr[5] = ' ';
     livesStr[6] = '0' + player.lives;
     livesStr[7] = '\0';
-    drawStringCentered(126, livesStr, 0xFF4444FF);
+    drawStringCenteredScaled(125, livesStr, 0xFF4444FF, 2);
 
-    // Progress bar - centered
-    int progress = ((ctx.current_level + 1) * 200) / TOTAL_LEVELS;
-    drawRect(140, 150, 200, 8, 0xFF222222);
-    drawRect(140, 150, progress, 8, 0xFF44AA44);
-    drawRect(140, 150, 200, 1, 0xFF66CC66);
+    // Progress bar - wider, centered
+    int progress = ((ctx.current_level + 1) * 280) / TOTAL_LEVELS;
+    drawRect(100, 160, 280, 10, 0xFF222222);
+    drawRect(100, 160, progress, 10, 0xFF44AA44);
+    drawRect(100, 160, 280, 1, 0xFF66CC66);
 
-    // "NEXT LEVEL" blinking - centered
+    // "PRESS START" blinking - centered
     if(timer < 80 && (timer / 15) % 2 == 0) {
-        drawStringCentered(170, "PRESS START", 0xFFFFFFFF);
+        drawStringCenteredScaled(200, "PRESS START", 0xFFFFFFFF, 2);
     }
 }
 
@@ -1397,6 +1397,7 @@ int main(int argc, char *argv[]) {
                 if(player.kills >= level_data->kills_required) {
                     ctx.state = STATE_LEVEL_COMPLETE;
                     ctx.state_timer = 150;
+                    play_levelup_sfx();
                 }
 
                 // Check lose condition

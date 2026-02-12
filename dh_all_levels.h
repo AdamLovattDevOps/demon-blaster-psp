@@ -892,7 +892,7 @@ static const char level19_music[] =
 static const LevelData all_levels[] = {
     /* Level 1 */
     {
-        "LEVEL 1",
+        "THE CRYPT",
         16, 16,
         level1_map,
         2.5f, 2.5f, 1.5f,
@@ -902,7 +902,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 2 */
     {
-        "LEVEL 2",
+        "DARK CROSSING",
         20, 20,
         level2_map,
         10.5f, 10.5f, 0.0f,
@@ -912,7 +912,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 3 */
     {
-        "LEVEL 3",
+        "THE LABYRINTH",
         24, 24,
         level3_map,
         5.5f, 5.5f, 0.0f,
@@ -922,7 +922,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 4 */
     {
-        "LEVEL 4",
+        "BLOOD CORRIDOR",
         20, 20,
         level4_map,
         10.5f, 17.5f, 0.0f,
@@ -932,7 +932,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 5 */
     {
-        "LEVEL 5",
+        "THE ARENA",
         26, 26,
         level5_map,
         13.0f, 13.0f, 0.0f,
@@ -942,7 +942,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 6 */
     {
-        "LEVEL 6",
+        "SHADOW GROUNDS",
         22, 22,
         level6_map,
         11.0f, 11.0f, 0.0f,
@@ -952,7 +952,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 7 */
     {
-        "LEVEL 7",
+        "HELLPIT",
         24, 24,
         level7_map,
         12.0f, 12.0f, 0.0f,
@@ -962,7 +962,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 8 */
     {
-        "LEVEL 8",
+        "THE COMPOUND",
         20, 20,
         level8_map,
         10.0f, 10.0f, 0.0f,
@@ -972,7 +972,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 9 */
     {
-        "LEVEL 9",
+        "DEMON FORTRESS",
         28, 28,
         level9_map,
         14.0f, 14.0f, 0.0f,
@@ -982,7 +982,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 10 */
     {
-        "LEVEL 10",
+        "VAST DARKNESS",
         30, 30,
         level10_map,
         15.0f, 15.0f, 0.0f,
@@ -992,7 +992,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 11 */
     {
-        "LEVEL 11",
+        "SOUL HARVEST",
         28, 28,
         level11_map,
         14.0f, 14.0f, 0.0f,
@@ -1002,7 +1002,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 12 */
     {
-        "LEVEL 12",
+        "KILLING FLOOR",
         26, 26,
         level12_map,
         13.0f, 13.0f, 0.0f,
@@ -1012,7 +1012,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 13 */
     {
-        "LEVEL 13",
+        "THE HORDE",
         32, 32,
         level13_map,
         16.0f, 16.0f, 0.0f,
@@ -1022,7 +1022,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 14 */
     {
-        "LEVEL 14",
+        "IRON SIEGE",
         28, 28,
         level14_map,
         14.0f, 14.0f, 0.0f,
@@ -1032,7 +1032,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 15 */
     {
-        "LEVEL 15",
+        "DEATH MARCH",
         30, 30,
         level15_map,
         15.0f, 15.0f, 0.0f,
@@ -1042,7 +1042,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 16 */
     {
-        "LEVEL 16",
+        "THE GAUNTLET",
         32, 32,
         level16_map,
         16.0f, 16.0f, 0.0f,
@@ -1052,7 +1052,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 17 */
     {
-        "LEVEL 17",
+        "ASCENSION",
         34, 34,
         level17_map,
         17.0f, 17.0f, 0.0f,
@@ -1062,7 +1062,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 18 */
     {
-        "LEVEL 18",
+        "PANDEMONIUM",
         32, 32,
         level18_map,
         16.0f, 16.0f, 0.0f,
@@ -1072,7 +1072,7 @@ static const LevelData all_levels[] = {
     },
     /* Level 19 - FINAL */
     {
-        "LEVEL 19 - FINAL",
+        "FINAL DESCENT",
         36, 36,
         level19_map,
         18.0f, 18.0f, 0.0f,
