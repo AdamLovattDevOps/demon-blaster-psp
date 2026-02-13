@@ -613,14 +613,31 @@ RayHit castRay(float px, float py, float angle) {
 void render3D() {
     unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
 
-    // Draw ceiling and floor - bulk fill rows
-    for(int y = 0; y < SCREEN_HEIGHT / 2; y++) {
-        unsigned int* row = vram + y * BUF_WIDTH;
-        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF333333;
+    // Theme color influence on environment
+    unsigned int tc = all_levels[ctx.current_level].theme_color;
+    int tr = tc & 0xFF, tg = (tc >> 8) & 0xFF, tb = (tc >> 16) & 0xFF;
+    // Tinted ceiling and floor (25% theme blend)
+    unsigned int ceilColor = 0xFF000000 |
+        (((0x33 * 3 + tb) >> 2) << 16) |
+        (((0x33 * 3 + tg) >> 2) << 8) |
+        ((0x33 * 3 + tr) >> 2);
+    unsigned int floorColor = 0xFF000000 |
+        (((0x66 * 3 + tb) >> 2) << 16) |
+        (((0x66 * 3 + tg) >> 2) << 8) |
+        ((0x66 * 3 + tr) >> 2);
+
+    // Draw ceiling and floor - fill first row then memcpy (much faster than per-pixel)
+    {
+        unsigned int* row = vram;
+        for(int x = 0; x < BUF_WIDTH; x++) row[x] = ceilColor;
+        for(int y = 1; y < SCREEN_HEIGHT / 2; y++)
+            memcpy(vram + y * BUF_WIDTH, row, BUF_WIDTH * 4);
     }
-    for(int y = SCREEN_HEIGHT / 2; y < SCREEN_HEIGHT; y++) {
-        unsigned int* row = vram + y * BUF_WIDTH;
-        for(int x = 0; x < SCREEN_WIDTH; x++) row[x] = 0xFF666666;
+    {
+        unsigned int* frow = vram + (SCREEN_HEIGHT / 2) * BUF_WIDTH;
+        for(int x = 0; x < BUF_WIDTH; x++) frow[x] = floorColor;
+        for(int y = SCREEN_HEIGHT / 2 + 1; y < SCREEN_HEIGHT; y++)
+            memcpy(vram + y * BUF_WIDTH, frow, BUF_WIDTH * 4);
     }
 
     // Precompute constant trig for ray fan
@@ -945,8 +962,11 @@ void render3D() {
     killStr[10] = '\0';
     drawString(120, SCREEN_HEIGHT - 18, killStr, 0xFF00CCFF);
 
-    // Level name
-    drawString(280, SCREEN_HEIGHT - 18, level->name, 0xFFFFAAAA);
+    // Level name in brightened theme color
+    {
+        unsigned int hn = 0xFF000000 | (((tb+255)/2) << 16) | (((tg+255)/2) << 8) | ((tr+255)/2);
+        drawString(280, SCREEN_HEIGHT - 18, level->name, hn);
+    }
 
     // FPS counter
     char fpsStr[8];

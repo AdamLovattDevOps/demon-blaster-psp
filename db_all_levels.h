@@ -382,24 +382,24 @@ static const LevelData all_levels[] = {
         0xFF4444CC  /* warm red */
     },
     /* Level 2 */ {
-        "DARK CROSSING", 20, 20, level2_map,
+        "WRAPPED IN PLASTIC", 20, 20, level2_map,
         10.5f, 10.5f, 0.0f, level2_enemies, 14, 12, level2_music,
-        0xFFCC8822  /* deep blue */
+        0xFFBB66FF  /* hot pink */
     },
     /* Level 3 */ {
-        "THE LABYRINTH", 24, 24, level3_map,
+        "HOLLYWOOD BOBBY", 24, 24, level3_map,
         5.5f, 5.5f, 0.0f, level3_enemies, 16, 14, level3_music,
-        0xFF22AA44  /* green */
+        0xFFEE2233  /* electric blue */
     },
     /* Level 4 */ {
-        "BLOOD CORRIDOR", 20, 20, level4_map,
+        "SAY IT AIN'T SO", 20, 20, level4_map,
         10.5f, 17.5f, 0.0f, level4_enemies, 18, 16, level4_music,
-        0xFF2222DD  /* blood red */
+        0xFF0088FF  /* punk orange */
     },
     /* Level 5 */ {
-        "THE ARENA", 26, 26, level5_map,
+        "THE OLYMPIC", 26, 26, level5_map,
         13.0f, 13.0f, 0.0f, level5_enemies, 20, 18, level5_music,
-        0xFF44AADD  /* gold */
+        0xFFAA5522  /* deep ocean blue */
     },
     /* Level 6 */ {
         "SHADOW GROUNDS", 22, 22, level6_map,
