@@ -540,6 +540,91 @@ void clearScreen(unsigned int color) {
     }
 }
 
+// Pre-baked texture bitmaps (32x32 each, computed once at startup)
+static unsigned int textures[4][32 * 32];
+
+void generateTextures() {
+    for(int t = 0; t < 4; t++) {
+        for(int row = 0; row < 32; row++) {
+            for(int col = 0; col < 32; col++) {
+                unsigned int color;
+                switch(t) {
+                case 0: { // BRICK
+                    int brickRow = row >> 3;
+                    int brickX = (brickRow & 1) ? ((col + 16) & 31) : col;
+                    int isMortar = ((row & 7) == 0) | ((brickX & 15) == 0);
+                    if(isMortar) {
+                        color = 0xFF888888;
+                    } else {
+                        int shade = 0x88 + ((brickRow * 37 + (brickX >> 4) * 53) & 0x1F);
+                        if(shade > 0xAA) shade = 0xAA;
+                        color = 0xFF000000 | ((shade >> 2) << 16) | ((shade >> 1) << 8) | shade;
+                    }
+                    break;
+                }
+                case 1: { // STONE
+                    int blockRow = row >> 4;
+                    int blockX = col >> 4;
+                    int isGrout = ((row & 15) < 1) | ((col & 15) < 1);
+                    if(isGrout) {
+                        color = 0xFF555555;
+                    } else {
+                        int shade = 0x77 + ((blockRow * 47 + blockX * 31 + row * 3 + col * 7) & 0x1F);
+                        if(shade > 0x99) shade = 0x99;
+                        color = 0xFF000000 | (shade << 16) | (shade << 8) | shade;
+                    }
+                    break;
+                }
+                case 2: { // GOLD
+                    int brickRow = row >> 3;
+                    int brickX = (brickRow & 1) ? ((col + 16) & 31) : col;
+                    int isMortar = ((row & 7) == 0) | ((brickX & 15) == 0);
+                    if(isMortar) {
+                        color = 0xFF446666;
+                    } else {
+                        int s = 0x99 + ((brickRow * 41 + (brickX >> 4) * 59 + col * 3) & 0x2F);
+                        if(s > 0xDD) s = 0xDD;
+                        color = 0xFF000000 | ((s >> 2) << 16) | (((s * 200) >> 8) << 8) | s;
+                    }
+                    break;
+                }
+                default: { // MOSS
+                    int blockRow = row >> 4;
+                    int blockX = col >> 4;
+                    int isGrout = ((row & 15) < 1) | ((col & 15) < 1);
+                    if(isGrout) {
+                        color = 0xFF445544;
+                    } else {
+                        int shade = 0x55 + ((blockRow * 29 + blockX * 43 + row * 5) & 0x2F);
+                        if(shade > 0x88) shade = 0x88;
+                        int isMoss = ((row * 7 + col * 13) & 7) < 3;
+                        if(isMoss) {
+                            color = 0xFF000000 | ((shade/3) << 16) | (shade << 8) | (shade/2);
+                        } else {
+                            color = 0xFF000000 | ((shade/2) << 16) | (((shade*3)>>2) << 8) | ((shade*3)>>2);
+                        }
+                    }
+                    break;
+                }
+                }
+                textures[t][row * 32 + col] = color;
+            }
+        }
+    }
+}
+
+// Pre-computed ray angle offsets (eliminates per-frame atanf calls)
+static float rayAngleOffset[SCREEN_WIDTH];
+
+void initRayTable() {
+    float tanHalfFov = tanf(FOV / 2.0f);
+    float invWidth = 2.0f / (float)SCREEN_WIDTH;
+    for(int x = 0; x < SCREEN_WIDTH; x++) {
+        float cameraX = x * invWidth - 1.0f;
+        rayAngleOffset[x] = atanf(cameraX * tanHalfFov);
+    }
+}
+
 // Raycasting
 typedef struct {
     float distance;
@@ -640,24 +725,19 @@ void render3D() {
             memcpy(vram + y * BUF_WIDTH, frow, BUF_WIDTH * 4);
     }
 
-    // Precompute constant trig for ray fan
-    float tanHalfFov = tanf(FOV / 2.0f);
-    float invWidth = 2.0f / (float)SCREEN_WIDTH;
-
-    // Cast rays + fill z-buffer
-    for(int x = 0; x < SCREEN_WIDTH; x++) {
-        float cameraX = x * invWidth - 1.0f;
-        float rayAngle = player.angle + atanf(cameraX * tanHalfFov);
+    // Cast rays at half resolution (240 cols doubled) + fill z-buffer
+    for(int x = 0; x < SCREEN_WIDTH; x += 2) {
+        float rayAngle = player.angle + rayAngleOffset[x];
 
         RayHit hit = castRay(player.x, player.y, rayAngle);
         zBuffer[x] = hit.distance;
+        zBuffer[x + 1] = hit.distance;
 
         if(hit.distance > 0) {
             int lineHeight = (int)(SCREEN_HEIGHT / hit.distance);
             int drawStart = (-lineHeight / 2 + SCREEN_HEIGHT / 2);
             int drawEnd = (lineHeight / 2 + SCREEN_HEIGHT / 2);
 
-            // Procedural textures: brick, stone, gold, moss
             int texX = (int)(hit.wallX * 32.0f) & 31;
 
             float step = 32.0f / (float)lineHeight;
@@ -665,7 +745,7 @@ void render3D() {
             int yStart = (drawStart < 0) ? 0 : drawStart;
             int yEnd = (drawEnd >= SCREEN_HEIGHT) ? SCREEN_HEIGHT - 1 : drawEnd;
 
-            // Precompute fog as fixed-point per column (constant for whole column)
+            // Precompute fog as fixed-point per column
             int fogFP = (int)((1.0f - (hit.distance / 20.0f)) * 256.0f);
             if(fogFP < 38) fogFP = 38;
             if(fogFP > 256) fogFP = 256;
@@ -676,80 +756,36 @@ void render3D() {
             int tileHash = (hit.mapHitX * 7 + hit.mapHitY * 13) & 7;
             int texType = (tileHash < 2) ? ((baseType + 1) & 3) : baseType;
 
+            // Pre-baked texture pointer (no per-pixel procedural math)
+            unsigned int* tex = textures[texType];
+
+            // Fog remap table: 256 adds replaces thousands of per-pixel multiplies
+            unsigned char fogRemap[256];
+            {
+                int acc = 0;
+                for(int i = 0; i < 256; i++) {
+                    fogRemap[i] = (unsigned char)(acc >> 8);
+                    acc += fogFP;
+                }
+            }
+
             for(int y = yStart; y <= yEnd; y++) {
                 int texRow = (int)texPos & 31;
                 texPos += step;
 
-                unsigned int color;
-                switch(texType) {
-                case 0: { // BRICK - red/brown (ABGR: B at bit16, R at bit0)
-                    int brickRow = texRow >> 3;
-                    int brickX = (brickRow & 1) ? ((texX + 16) & 31) : texX;
-                    int isMortar = ((texRow & 7) == 0) | ((brickX & 15) == 0);
-                    if(isMortar) {
-                        color = 0xFF888888;
-                    } else {
-                        int shade = 0x88 + ((brickRow * 37 + (brickX >> 4) * 53) & 0x1F);
-                        if(shade > 0xAA) shade = 0xAA;
-                        color = 0xFF000000 | ((shade >> 2) << 16) | ((shade >> 1) << 8) | shade;
-                    }
-                    break;
-                }
-                case 1: { // STONE - gray rough blocks
-                    int blockRow = texRow >> 4;
-                    int blockX = texX >> 4;
-                    int isGrout = ((texRow & 15) < 1) | ((texX & 15) < 1);
-                    if(isGrout) {
-                        color = 0xFF555555;
-                    } else {
-                        int shade = 0x77 + ((blockRow * 47 + blockX * 31 + texRow * 3 + texX * 7) & 0x1F);
-                        if(shade > 0x99) shade = 0x99;
-                        color = 0xFF000000 | (shade << 16) | (shade << 8) | shade;
-                    }
-                    break;
-                }
-                case 2: { // GOLD - yellow/amber (ABGR)
-                    int brickRow = texRow >> 3;
-                    int brickX = (brickRow & 1) ? ((texX + 16) & 31) : texX;
-                    int isMortar = ((texRow & 7) == 0) | ((brickX & 15) == 0);
-                    if(isMortar) {
-                        color = 0xFF446666;
-                    } else {
-                        int s = 0x99 + ((brickRow * 41 + (brickX >> 4) * 59 + texX * 3) & 0x2F);
-                        if(s > 0xDD) s = 0xDD;
-                        color = 0xFF000000 | ((s >> 2) << 16) | (((s * 200) >> 8) << 8) | s;
-                    }
-                    break;
-                }
-                default: { // MOSS - green-tinted stone (ABGR)
-                    int blockRow = texRow >> 4;
-                    int blockX = texX >> 4;
-                    int isGrout = ((texRow & 15) < 1) | ((texX & 15) < 1);
-                    if(isGrout) {
-                        color = 0xFF445544;
-                    } else {
-                        int shade = 0x55 + ((blockRow * 29 + blockX * 43 + texRow * 5) & 0x2F);
-                        if(shade > 0x88) shade = 0x88;
-                        int isMoss = ((texRow * 7 + texX * 13) & 7) < 3;
-                        if(isMoss) {
-                            color = 0xFF000000 | ((shade/3) << 16) | (shade << 8) | (shade/2);
-                        } else {
-                            color = 0xFF000000 | ((shade/2) << 16) | (((shade*3)>>2) << 8) | ((shade*3)>>2);
-                        }
-                    }
-                    break;
-                }
-                }
+                unsigned int color = tex[texRow * 32 + texX];
 
                 // Side shading via bitshift
                 if(sideShift) color = (color >> 1) & 0xFF7F7F7F;
 
-                // Integer fog (fixed-point multiply + shift)
-                int r = (((color >> 16) & 0xFF) * fogFP) >> 8;
-                int g = (((color >> 8) & 0xFF) * fogFP) >> 8;
-                int b = ((color & 0xFF) * fogFP) >> 8;
+                // Fog via table lookup (no per-pixel multiplies)
+                unsigned int fc = 0xFF000000
+                    | (fogRemap[(color >> 16) & 0xFF] << 16)
+                    | (fogRemap[(color >> 8) & 0xFF] << 8)
+                    |  fogRemap[color & 0xFF];
 
-                vram[y * BUF_WIDTH + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                vram[y * BUF_WIDTH + x] = fc;
+                vram[y * BUF_WIDTH + x + 1] = fc;
             }
         }
     }
@@ -1400,6 +1436,10 @@ int main(int argc, char *argv[]) {
     g_audio.audio_channel = -1;
     g_audio.audio_thread_running = 1;
     start_sfx();
+
+    log_debug("Pre-generating textures and ray tables...");
+    generateTextures();
+    initRayTable();
 
     log_debug("Entering main loop...");
     fps_last_tick = sceKernelGetSystemTimeLow();
