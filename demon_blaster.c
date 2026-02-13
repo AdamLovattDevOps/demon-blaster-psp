@@ -1,5 +1,5 @@
-// Demon Blaster - 9 Level PSP Version
-// All levels, music, and shooting mechanics
+// Demon Blaster - PSP Raycaster FPS
+// 10 levels, procedural textures, GU hardware rendering
 
 #include <pspkernel.h>
 #include <pspdisplay.h>
@@ -10,12 +10,16 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+#include <pspgu.h>
+#include <psppower.h>
 
 #include "db_all_levels.h"
 
 PSP_MODULE_INFO("Demon Blaster", 0, 0, 4);
 
-// Debug logging to memory stick
+// ============================================================
+// DEBUG & UTILITIES
+// ============================================================
 FILE* debug_log = NULL;
 void log_debug(const char* msg) {
     if (!debug_log) {
@@ -26,6 +30,9 @@ void log_debug(const char* msg) {
     fflush(debug_log);
 }
 
+// ============================================================
+// CONSTANTS & DEFINES
+// ============================================================
 #define SCREEN_WIDTH 480
 #define SCREEN_HEIGHT 272
 #define BUF_WIDTH 512
@@ -41,11 +48,51 @@ void log_debug(const char* msg) {
 #define SAMPLE_RATE 22050
 #define NUM_SAMPLES 512
 
-void* fbp0;
-void* fbp1;
-static int draw_buffer = 0;
+// ============================================================
+// GU / VRAM GLOBALS
+// ============================================================
+static void* gu_fbp0;
+static void* gu_fbp1;
+static void* gu_zbp;
+static void* gu_draw_buffer; // tracks current draw buffer offset
 
-// Game states
+// Cached RAM framebuffer for non-playing state software rendering
+static unsigned int __attribute__((aligned(16))) ram_fb[BUF_WIDTH * SCREEN_HEIGHT];
+static unsigned int __attribute__((aligned(16))) gu_list[65536]; // 256KB display list
+
+// GU vertex types
+typedef struct {
+    float u, v;
+    unsigned int color;
+    float x, y, z;
+} TexVertex;
+
+typedef struct {
+    unsigned int color;
+    float x, y, z;
+} ColorVertex;
+
+#define TEX_VERTEX_FMT (GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D)
+#define COLOR_VERTEX_FMT (GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D)
+
+// VRAM allocator (returns VRAM-relative offsets)
+static unsigned int vramStaticOffset = 0;
+static void* getStaticVramBuffer(unsigned int width, unsigned int height, unsigned int psm) {
+    unsigned int bpp = (psm == GU_PSM_8888) ? 4 : 2;
+    void* result = (void*)vramStaticOffset;
+    vramStaticOffset += width * height * bpp;
+    return result;
+}
+
+// Font texture atlas (256x8, all 42 chars packed)
+static unsigned int __attribute__((aligned(16))) font_atlas[256 * 8];
+
+// Death flash mask (same shape as demon sprite, all white where opaque)
+static unsigned int __attribute__((aligned(16))) demon_sprite_mask[32 * 64];
+
+// ============================================================
+// TYPE DEFINITIONS & GAME STATE
+// ============================================================
 typedef enum {
     STATE_TITLE,
     STATE_LEVEL_START,
@@ -109,12 +156,12 @@ unsigned int fps_last_tick = 0;
 int fps_frame_count = 0;
 int fps_display = 0;
 
-// SFX state
+// ============================================================
+// AUDIO SYSTEM (music + SFX)
+// ============================================================
 #define SFX_SAMPLES 512
 volatile int sfx_channel = -1;
 volatile int sfx_remaining = 0;
-volatile int sfx_duration = 3300;
-volatile float sfx_phase = 0.0f;
 #define SFX_TYPE_BLASTER 0
 #define SFX_TYPE_LEVELUP 1
 volatile int sfx_type = SFX_TYPE_BLASTER;
@@ -122,6 +169,10 @@ volatile int sfx_type = SFX_TYPE_BLASTER;
 #define SFX_DURATION_LEVELUP 8800   // ~400ms ascending arpeggio
 #define SHOOT_COOLDOWN_FRAMES 10    // ~166ms between shots
 volatile int shoot_cooldown = 0;
+
+// Pre-computed SFX waveforms (generated once at startup, eliminates runtime sinf)
+static short blaster_pcm[SFX_DURATION_BLASTER];
+static short levelup_pcm[SFX_DURATION_LEVELUP];
 
 // Musical note frequencies
 float get_frequency(const char* note_str) {
@@ -261,52 +312,28 @@ void start_audio() {
     }
 }
 
-// SFX audio thread - generates blaster and level-up sounds
+// SFX audio thread - plays pre-computed PCM buffers (no runtime sinf)
 int sfx_thread(SceSize args, void* argp) {
     short sfx_buffer[SFX_SAMPLES * 2];
 
     while (g_audio.audio_thread_running) {
         if (sfx_remaining <= 0) {
-            // Idle: output silence at zero volume, minimal CPU
             memset(sfx_buffer, 0, sizeof(sfx_buffer));
             sceAudioOutputPannedBlocking(sfx_channel, 0, 0, sfx_buffer);
             continue;
         }
 
-        for (int i = 0; i < SFX_SAMPLES; i++) {
-            short sample = 0;
-            if (sfx_remaining > 0) {
-                float t = (float)sfx_remaining / (float)sfx_duration; // 1.0 -> 0.0
+        short* pcm = (sfx_type == SFX_TYPE_BLASTER) ? blaster_pcm : levelup_pcm;
+        int duration = (sfx_type == SFX_TYPE_BLASTER) ? SFX_DURATION_BLASTER : SFX_DURATION_LEVELUP;
+        int offset = duration - sfx_remaining;
+        int count = (sfx_remaining < SFX_SAMPLES) ? sfx_remaining : SFX_SAMPLES;
 
-                if (sfx_type == SFX_TYPE_BLASTER) {
-                    // Sci-fi phaser: frequency sweep 900Hz -> 100Hz
-                    float sweep = 100.0f + 800.0f * t;
-                    float env = t * t;
-                    float tone = sinf(sfx_phase) * env;
-                    float harmonic = sinf(sfx_phase * 2.0f) * env * 0.3f;
-                    float buzz = sinf(sfx_phase * 7.0f) * env * 0.08f;
-                    float mixed = (tone + harmonic + buzz) * 0.9f;
-                    sample = (short)(mixed * 32700.0f);
-                    sfx_phase += 2.0f * M_PI * sweep / SAMPLE_RATE;
-                } else {
-                    // Level-up: ascending arpeggio C5 -> E5 -> G5 -> C6
-                    float progress = 1.0f - t; // 0.0 -> 1.0
-                    float freq;
-                    if (progress < 0.25f) freq = 523.0f;       // C5
-                    else if (progress < 0.50f) freq = 659.0f;  // E5
-                    else if (progress < 0.75f) freq = 784.0f;  // G5
-                    else freq = 1047.0f;                        // C6
-                    float env2 = (t > 0.1f) ? 1.0f : t / 0.1f;
-                    float tone = sinf(sfx_phase) * env2 * 0.7f;
-                    float shimmer = sinf(sfx_phase * 3.0f) * env2 * 0.15f;
-                    sample = (short)((tone + shimmer) * 32700.0f);
-                    sfx_phase += 2.0f * M_PI * freq / SAMPLE_RATE;
-                }
-                sfx_remaining--;
-            }
+        for (int i = 0; i < SFX_SAMPLES; i++) {
+            short sample = (i < count) ? pcm[offset + i] : 0;
             sfx_buffer[i * 2] = sample;
             sfx_buffer[i * 2 + 1] = sample;
         }
+        sfx_remaining -= count;
 
         sceAudioOutputPannedBlocking(sfx_channel,
             PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, sfx_buffer);
@@ -317,29 +344,27 @@ int sfx_thread(SceSize args, void* argp) {
 void start_sfx() {
     sfx_channel = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, SFX_SAMPLES, PSP_AUDIO_FORMAT_STEREO);
     if (sfx_channel >= 0) {
-        // Priority 0x16: lower than music thread (0x12) so music timing is never starved
-        int thid = sceKernelCreateThread("sfx_thread", sfx_thread, 0x16, 0x10000, 0, NULL);
+        // Priority 0x22: below main thread so SFX never preempts gameplay
+        int thid = sceKernelCreateThread("sfx_thread", sfx_thread, 0x22, 0x10000, 0, NULL);
         if (thid >= 0) sceKernelStartThread(thid, 0, NULL);
     }
 }
 
 void play_shoot_sfx() {
     if (shoot_cooldown > 0) return;  // let current SFX finish before retriggering
-    sfx_phase = 0.0f;
     sfx_type = SFX_TYPE_BLASTER;
-    sfx_duration = SFX_DURATION_BLASTER;
     sfx_remaining = SFX_DURATION_BLASTER;
     shoot_cooldown = SHOOT_COOLDOWN_FRAMES;
 }
 
 void play_levelup_sfx() {
-    sfx_phase = 0.0f;
     sfx_type = SFX_TYPE_LEVELUP;
-    sfx_duration = SFX_DURATION_LEVELUP;
     sfx_remaining = SFX_DURATION_LEVELUP;
 }
 
-// Exit callback
+// ============================================================
+// PSP CALLBACKS
+// ============================================================
 int exit_callback(int arg1, int arg2, void *common) {
     log_debug("Exit callback triggered - cleaning up...");
     g_audio.audio_thread_running = 0;
@@ -370,20 +395,11 @@ int SetupCallbacks(void) {
     return thid;
 }
 
-// Drawing functions
-void drawVLine(int x, int y1, int y2, unsigned int color) {
-    if(y1 > y2) { int tmp = y1; y1 = y2; y2 = tmp; }
-    if(y1 < 0) y1 = 0;
-    if(y2 >= SCREEN_HEIGHT) y2 = SCREEN_HEIGHT - 1;
-
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
-    for(int y = y1; y <= y2; y++) {
-        vram[y * BUF_WIDTH + x] = color;
-    }
-}
-
+// ============================================================
+// SOFTWARE DRAWING (ram_fb — used by non-playing screens)
+// ============================================================
 void drawRect(int x, int y, int w, int h, unsigned int color) {
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    unsigned int* vram = ram_fb;
     for(int i = 0; i < h; i++) {
         for(int j = 0; j < w; j++) {
             int px = x + j;
@@ -464,7 +480,7 @@ static int strPixelWidth(const char* str, int scale) {
 void drawChar(int cx, int cy, char c, unsigned int color) {
     int idx = fontIndex(c);
     if(idx < 0) return;
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    unsigned int* vram = ram_fb;
     for(int col = 0; col < 5; col++) {
         unsigned char bits = font_data[idx][col];
         for(int row = 0; row < 8; row++) {
@@ -482,7 +498,7 @@ void drawChar(int cx, int cy, char c, unsigned int color) {
 void drawCharScaled(int cx, int cy, char c, unsigned int color, int scale) {
     int idx = fontIndex(c);
     if(idx < 0) return;
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    unsigned int* vram = ram_fb;
     for(int col = 0; col < 5; col++) {
         unsigned char bits = font_data[idx][col];
         for(int row = 0; row < 8; row++) {
@@ -528,20 +544,10 @@ void drawStringCenteredScaled(int y, const char* str, unsigned int color, int sc
     drawStringScaled(x, y, str, color, scale);
 }
 
-// Z-buffer for sprite occlusion
-float zBuffer[480];
-
-void clearScreen(unsigned int color) {
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
-    // Fill first row then memcpy to remaining rows
-    for(int x = 0; x < BUF_WIDTH; x++) vram[x] = color;
-    for(int y = 1; y < SCREEN_HEIGHT; y++) {
-        memcpy(vram + y * BUF_WIDTH, vram, BUF_WIDTH * 4);
-    }
-}
-
-// Pre-baked texture bitmaps (32x32 each, computed once at startup)
-static unsigned int textures[4][32 * 32];
+// ============================================================
+// ASSET GENERATION (textures, sprites, font atlas, ray table)
+// ============================================================
+static unsigned int __attribute__((aligned(16))) textures[4][32 * 32];
 
 void generateTextures() {
     for(int t = 0; t < 4; t++) {
@@ -613,6 +619,95 @@ void generateTextures() {
     }
 }
 
+// Pre-rendered demon sprite (32x64, 0=transparent, computed once at startup)
+static unsigned int __attribute__((aligned(16))) demon_sprite[32 * 64];
+
+void generateDemonSprite() {
+    for(int y = 0; y < 64; y++) {
+        int fracY = (y * 256) / 64;  // 0-252 maps to sprite height fraction
+        for(int x = 0; x < 32; x++) {
+            int relXFP = (x * 256) / 32;  // 0-248 left-to-right
+            int centerXFP = relXFP - 128;
+            if(centerXFP < 0) centerXFP = -centerXFP;
+            centerXFP *= 2;  // 0-256 from center
+
+            unsigned int color = 0;  // transparent
+
+            if(fracY < 56) {  // head (top 22%)
+                if(centerXFP <= 153) {  // head width 60%
+                    color = 0xFF3333EE;  // red demon skin
+                    int headFrac = (fracY * 100) / 56;
+                    int headXFrac = (centerXFP * 100) / 153;
+                    if(headFrac < 15 && headXFrac >= 60 && headXFrac < 95)
+                        color = 0xFF181888;  // horns
+                    else if(headFrac >= 28 && headFrac < 48 && headXFrac >= 25 && headXFrac < 65)
+                        color = 0xFF00FFFF;  // glowing yellow eyes
+                    else if(headFrac >= 72 && headFrac < 92 && headXFrac < 65) {
+                        if((relXFP >> 4) & 1) color = 0xFFDDEEEE;  // teeth
+                        else color = 0xFF000044;  // mouth gaps
+                    }
+                }
+            } else if(fracY < 166) {  // body (22-65%)
+                if(centerXFP <= 204)  // body width 80%
+                    color = 0xFF2222DD;
+            } else {  // legs (65-100%)
+                if(!(centerXFP > 102 && centerXFP < 153) && centerXFP <= 230)
+                    color = 0xFF1818AA;
+            }
+
+            demon_sprite[y * 32 + x] = color;
+        }
+    }
+    // Generate death flash mask (white where opaque, transparent where not)
+    for(int i = 0; i < 32 * 64; i++)
+        demon_sprite_mask[i] = demon_sprite[i] ? 0xFFFFFFFF : 0;
+}
+
+void generateFontAtlas() {
+    memset(font_atlas, 0, sizeof(font_atlas));
+    for(int ch = 0; ch < 42; ch++) {
+        for(int col = 0; col < 5; col++) {
+            unsigned char bits = font_data[ch][col];
+            for(int row = 0; row < 8; row++) {
+                if(bits & (1 << row))
+                    font_atlas[row * 256 + ch * 6 + col] = 0xFFFFFFFF;
+            }
+        }
+    }
+}
+
+void generateSFX() {
+    // Blaster: frequency sweep 900Hz -> 100Hz with harmonics
+    float phase = 0.0f;
+    for(int i = 0; i < SFX_DURATION_BLASTER; i++) {
+        float t = (float)(SFX_DURATION_BLASTER - i) / (float)SFX_DURATION_BLASTER;
+        float sweep = 100.0f + 800.0f * t;
+        float env = t * t;
+        float tone = sinf(phase) * env;
+        float harmonic = sinf(phase * 2.0f) * env * 0.3f;
+        float buzz = sinf(phase * 7.0f) * env * 0.08f;
+        float mixed = (tone + harmonic + buzz) * 0.9f;
+        blaster_pcm[i] = (short)(mixed * 32700.0f);
+        phase += 2.0f * M_PI * sweep / SAMPLE_RATE;
+    }
+    // Level-up: ascending arpeggio C5 -> E5 -> G5 -> C6
+    phase = 0.0f;
+    for(int i = 0; i < SFX_DURATION_LEVELUP; i++) {
+        float t = (float)(SFX_DURATION_LEVELUP - i) / (float)SFX_DURATION_LEVELUP;
+        float progress = 1.0f - t;
+        float freq;
+        if(progress < 0.25f) freq = 523.0f;
+        else if(progress < 0.50f) freq = 659.0f;
+        else if(progress < 0.75f) freq = 784.0f;
+        else freq = 1047.0f;
+        float env2 = (t > 0.1f) ? 1.0f : t / 0.1f;
+        float tone = sinf(phase) * env2 * 0.7f;
+        float shimmer = sinf(phase * 3.0f) * env2 * 0.15f;
+        levelup_pcm[i] = (short)((tone + shimmer) * 32700.0f);
+        phase += 2.0f * M_PI * freq / SAMPLE_RATE;
+    }
+}
+
 // Pre-computed ray angle offsets (eliminates per-frame atanf calls)
 static float rayAngleOffset[SCREEN_WIDTH];
 
@@ -625,7 +720,9 @@ void initRayTable() {
     }
 }
 
-// Raycasting
+// ============================================================
+// RAYCASTING
+// ============================================================
 typedef struct {
     float distance;
     int side;
@@ -694,107 +791,152 @@ RayHit castRay(float px, float py, float angle) {
     return hit;
 }
 
-// Render 3D view
+// ============================================================
+// GU RENDERING HELPERS
+// ============================================================
+void guDrawRect(float x, float y, float w, float h, unsigned int color) {
+    ColorVertex* v = (ColorVertex*)sceGuGetMemory(2 * sizeof(ColorVertex));
+    v[0].color = color; v[0].x = x;     v[0].y = y;     v[0].z = 0;
+    v[1].color = color; v[1].x = x + w; v[1].y = y + h; v[1].z = 0;
+    sceGuDrawArray(GU_SPRITES, COLOR_VERTEX_FMT, 2, 0, v);
+}
+
+// GU helper: draw text string (sets up font texture internally)
+void guDrawString(float x, float y, const char* str, unsigned int color) {
+    int len = 0;
+    const char* p = str;
+    while(*p) { len++; p++; }
+    if(len == 0) return;
+
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+    sceGuTexImage(0, 256, 8, 256, font_atlas);
+    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuEnable(GU_ALPHA_TEST);
+    sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+
+    TexVertex* v = (TexVertex*)sceGuGetMemory(len * 2 * sizeof(TexVertex));
+    int vi = 0;
+    float cx = x;
+    p = str;
+    while(*p) {
+        int idx = fontIndex(*p);
+        if(idx >= 0) {
+            float u0 = (float)(idx * 6);
+            v[vi].u = u0;     v[vi].v = 0; v[vi].color = color;
+            v[vi].x = cx;     v[vi].y = y; v[vi].z = 0; vi++;
+            v[vi].u = u0 + 5; v[vi].v = 8; v[vi].color = color;
+            v[vi].x = cx + 5; v[vi].y = y + 8; v[vi].z = 0; vi++;
+        }
+        cx += 6;
+        p++;
+    }
+    if(vi > 0)
+        sceGuDrawArray(GU_SPRITES, TEX_VERTEX_FMT, vi, 0, v);
+    sceGuDisable(GU_ALPHA_TEST);
+}
+
+// ============================================================
+// 3D RENDERER (GU hardware — called within sceGuStart/sceGuFinish)
+// ============================================================
 void render3D() {
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    const LevelData* level = &all_levels[ctx.current_level];
 
-    // Theme color influence on environment
-    unsigned int tc = all_levels[ctx.current_level].theme_color;
+    // ===== THEME COLORS =====
+    unsigned int tc = level->theme_color;
     int tr = tc & 0xFF, tg = (tc >> 8) & 0xFF, tb = (tc >> 16) & 0xFF;
-    // Tinted ceiling and floor (25% theme blend)
-    unsigned int ceilColor = 0xFF000000 |
-        (((0x33 * 3 + tb) >> 2) << 16) |
-        (((0x33 * 3 + tg) >> 2) << 8) |
-        ((0x33 * 3 + tr) >> 2);
-    unsigned int floorColor = 0xFF000000 |
-        (((0x66 * 3 + tb) >> 2) << 16) |
-        (((0x66 * 3 + tg) >> 2) << 8) |
-        ((0x66 * 3 + tr) >> 2);
+    unsigned int ceilColor = level->ceil_color;
+    unsigned int floorColor = level->floor_color;
 
-    // Draw ceiling and floor - fill first row then memcpy (much faster than per-pixel)
+    // ===== PHASE 1: FLOOR & CEILING (opaque, far depth) =====
+    sceGuEnable(GU_DEPTH_TEST);
+    sceGuDepthFunc(GU_LEQUAL);
+    sceGuDepthMask(0); // enable depth writes
+    sceGuDisable(GU_TEXTURE_2D);
     {
-        unsigned int* row = vram;
-        for(int x = 0; x < BUF_WIDTH; x++) row[x] = ceilColor;
-        for(int y = 1; y < SCREEN_HEIGHT / 2; y++)
-            memcpy(vram + y * BUF_WIDTH, row, BUF_WIDTH * 4);
-    }
-    {
-        unsigned int* frow = vram + (SCREEN_HEIGHT / 2) * BUF_WIDTH;
-        for(int x = 0; x < BUF_WIDTH; x++) frow[x] = floorColor;
-        for(int y = SCREEN_HEIGHT / 2 + 1; y < SCREEN_HEIGHT; y++)
-            memcpy(vram + y * BUF_WIDTH, frow, BUF_WIDTH * 4);
+        ColorVertex* cv = (ColorVertex*)sceGuGetMemory(4 * sizeof(ColorVertex));
+        cv[0].color = ceilColor;  cv[0].x = 0; cv[0].y = 0;                   cv[0].z = 65535;
+        cv[1].color = ceilColor;  cv[1].x = SCREEN_WIDTH; cv[1].y = SCREEN_HEIGHT/2; cv[1].z = 65535;
+        cv[2].color = floorColor; cv[2].x = 0; cv[2].y = SCREEN_HEIGHT/2;      cv[2].z = 65535;
+        cv[3].color = floorColor; cv[3].x = SCREEN_WIDTH; cv[3].y = SCREEN_HEIGHT;  cv[3].z = 65535;
+        sceGuDrawArray(GU_SPRITES, COLOR_VERTEX_FMT, 4, 0, cv);
     }
 
-    // Cast rays at half resolution (240 cols doubled) + fill z-buffer
-    for(int x = 0; x < SCREEN_WIDTH; x += 2) {
+    // ===== CPU RAYCASTING (math only, no pixel writes) =====
+    int numCols = SCREEN_WIDTH / 2; // 240 half-res columns
+    float colDist[240];
+    int colTexType[240];
+    int colTexX[240];
+    int colDrawStart[240];
+    int colDrawEnd[240];
+    int colSide[240];
+    int colValid[240];
+
+    for(int c = 0; c < numCols; c++) {
+        int x = c * 2;
         float rayAngle = player.angle + rayAngleOffset[x];
-
         RayHit hit = castRay(player.x, player.y, rayAngle);
-        zBuffer[x] = hit.distance;
-        zBuffer[x + 1] = hit.distance;
+        colDist[c] = hit.distance;
 
         if(hit.distance > 0) {
+            colValid[c] = 1;
             int lineHeight = (int)(SCREEN_HEIGHT / hit.distance);
-            int drawStart = (-lineHeight / 2 + SCREEN_HEIGHT / 2);
-            int drawEnd = (lineHeight / 2 + SCREEN_HEIGHT / 2);
-
-            int texX = (int)(hit.wallX * 32.0f) & 31;
-
-            float step = 32.0f / (float)lineHeight;
-            float texPos = (drawStart < 0) ? (-drawStart * step) : 0.0f;
-            int yStart = (drawStart < 0) ? 0 : drawStart;
-            int yEnd = (drawEnd >= SCREEN_HEIGHT) ? SCREEN_HEIGHT - 1 : drawEnd;
-
-            // Precompute fog as fixed-point per column
-            int fogFP = (int)((1.0f - (hit.distance / 20.0f)) * 256.0f);
-            if(fogFP < 38) fogFP = 38;
-            if(fogFP > 256) fogFP = 256;
-            int sideShift = hit.side;
-
-            // Texture type: level sets primary, some tiles get accent
-            int baseType = ctx.current_level & 3;
+            colDrawStart[c] = -lineHeight / 2 + SCREEN_HEIGHT / 2;
+            colDrawEnd[c] = lineHeight / 2 + SCREEN_HEIGHT / 2;
+            colTexX[c] = (int)(hit.wallX * 32.0f) & 31;
+            colSide[c] = hit.side;
+            int baseType = level->wall_texture;
             int tileHash = (hit.mapHitX * 7 + hit.mapHitY * 13) & 7;
-            int texType = (tileHash < 2) ? ((baseType + 1) & 3) : baseType;
-
-            // Pre-baked texture pointer (no per-pixel procedural math)
-            unsigned int* tex = textures[texType];
-
-            // Fog remap table: 256 adds replaces thousands of per-pixel multiplies
-            unsigned char fogRemap[256];
-            {
-                int acc = 0;
-                for(int i = 0; i < 256; i++) {
-                    fogRemap[i] = (unsigned char)(acc >> 8);
-                    acc += fogFP;
-                }
-            }
-
-            for(int y = yStart; y <= yEnd; y++) {
-                int texRow = (int)texPos & 31;
-                texPos += step;
-
-                unsigned int color = tex[texRow * 32 + texX];
-
-                // Side shading via bitshift
-                if(sideShift) color = (color >> 1) & 0xFF7F7F7F;
-
-                // Fog via table lookup (no per-pixel multiplies)
-                unsigned int fc = 0xFF000000
-                    | (fogRemap[(color >> 16) & 0xFF] << 16)
-                    | (fogRemap[(color >> 8) & 0xFF] << 8)
-                    |  fogRemap[color & 0xFF];
-
-                vram[y * BUF_WIDTH + x] = fc;
-                vram[y * BUF_WIDTH + x + 1] = fc;
-            }
+            colTexType[c] = (tileHash < 2) ? ((baseType + 1) & 3) : baseType;
+        } else {
+            colValid[c] = 0;
         }
     }
 
-    // Sort enemies by distance (far to near) for proper painter's order
-    const LevelData* level = &all_levels[ctx.current_level];
+    // ===== PHASE 2: WALLS (textured, batched per texture) =====
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+
+    for(int texId = 0; texId < 4; texId++) {
+        int count = 0;
+        for(int c = 0; c < numCols; c++)
+            if(colValid[c] && colTexType[c] == texId) count++;
+        if(count == 0) continue;
+
+        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+        sceGuTexImage(0, 32, 32, 32, textures[texId]);
+
+        TexVertex* v = (TexVertex*)sceGuGetMemory(count * 2 * sizeof(TexVertex));
+        int vi = 0;
+        for(int c = 0; c < numCols; c++) {
+            if(!colValid[c] || colTexType[c] != texId) continue;
+            int x = c * 2;
+            float fog = 1.0f - colDist[c] / 20.0f;
+            if(fog < 0.15f) fog = 0.15f;
+            int fogByte = (int)(fog * 255.0f);
+            if(colSide[c]) fogByte >>= 1;
+            unsigned int fogColor = 0xFF000000 | (fogByte << 16) | (fogByte << 8) | fogByte;
+            float z = colDist[c] * (65535.0f / 20.0f);
+            if(z > 65535.0f) z = 65535.0f;
+            float u0 = (float)colTexX[c];
+
+            v[vi].u = u0;       v[vi].v = 0;
+            v[vi].color = fogColor;
+            v[vi].x = (float)x; v[vi].y = (float)colDrawStart[c]; v[vi].z = z;
+            vi++;
+            v[vi].u = u0 + 1;   v[vi].v = 32;
+            v[vi].color = fogColor;
+            v[vi].x = (float)(x + 2); v[vi].y = (float)colDrawEnd[c]; v[vi].z = z;
+            vi++;
+        }
+        sceGuDrawArray(GU_SPRITES, TEX_VERTEX_FMT, vi, 0, v);
+    }
+
+    // ===== PHASE 3: ENEMY SPRITES (alpha-tested, depth-tested, batched) =====
     int sortedEnemies[MAX_ENEMIES];
     int visibleCount = 0;
-
     for(int i = 0; i < level->enemy_count; i++) {
         if(!enemies[i].alive) continue;
         float dx = enemies[i].x - player.x;
@@ -802,7 +944,6 @@ void render3D() {
         enemies[i].distance = sqrtf(dx*dx + dy*dy);
         sortedEnemies[visibleCount++] = i;
     }
-    // Simple insertion sort by distance (descending)
     for(int i = 1; i < visibleCount; i++) {
         int key = sortedEnemies[i];
         int j = i - 1;
@@ -813,180 +954,178 @@ void render3D() {
         sortedEnemies[j+1] = key;
     }
 
-    // Draw sorted enemies with z-buffer occlusion
+    sceGuEnable(GU_ALPHA_TEST);
+    sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+    sceGuDepthMask(0xFFFF); // sprites don't write depth
+
     float halfFov = FOV / 2.0f;
+
+    // Pre-compute screen info for all visible sprites
+    float spX0[MAX_ENEMIES], spX1[MAX_ENEMIES];
+    float spY0[MAX_ENEMIES], spY1[MAX_ENEMIES];
+    float spZ[MAX_ENEMIES];
+    unsigned int spFog[MAX_ENEMIES];
+    int spDying[MAX_ENEMIES], spDeathFrame[MAX_ENEMIES];
+    int spCount = 0;
+
     for(int si = 0; si < visibleCount; si++) {
         int i = sortedEnemies[si];
         float dx = enemies[i].x - player.x;
         float dy = enemies[i].y - player.y;
         float angleToEnemy = atan2f(dy, dx);
         float angleDiff = angleToEnemy - player.angle;
-
         while(angleDiff > M_PI) angleDiff -= 2.0f * M_PI;
         while(angleDiff < -M_PI) angleDiff += 2.0f * M_PI;
-
         float distance = enemies[i].distance;
 
         if(fabsf(angleDiff) < halfFov && distance > 0.5f) {
             int screenX = (int)(SCREEN_WIDTH / 2 + (angleDiff / halfFov) * (SCREEN_WIDTH / 2));
-            int spriteHeight = (int)(SCREEN_HEIGHT / distance);
-            int spriteWidth = spriteHeight / 2;
-            if(spriteWidth < 4) spriteWidth = 4;
-            int drawStartY = (SCREEN_HEIGHT - spriteHeight) / 2;
-            int drawEndY = drawStartY + spriteHeight;
+            int spriteH = (int)(SCREEN_HEIGHT / distance);
+            int spriteW = spriteH / 2;
+            if(spriteW < 4) spriteW = 4;
 
-            // Clamp Y range
-            int yStart = (drawStartY < 0) ? 0 : drawStartY;
-            int yEnd = (drawEndY >= SCREEN_HEIGHT) ? SCREEN_HEIGHT - 1 : drawEndY;
-            int sxStart = screenX - spriteWidth / 2;
-            int sxEnd = screenX + spriteWidth / 2;
-            if(sxStart < 0) sxStart = 0;
-            if(sxEnd > SCREEN_WIDTH) sxEnd = SCREEN_WIDTH;
+            float fog = 1.0f - distance / 20.0f;
+            if(fog < 0.15f) fog = 0.15f;
+            int fogByte = (int)(fog * 255.0f);
+            float z = distance * (65535.0f / 20.0f);
+            if(z > 65535.0f) z = 65535.0f;
 
-            // Precompute fog as integer for this enemy
-            int eFogFP = (int)((1.0f - (distance / 20.0f)) * 256.0f);
-            if(eFogFP < 38) eFogFP = 38;
-            if(eFogFP > 256) eFogFP = 256;
-
-            // Fixed-point thresholds (scaled to spriteHeight * 256)
-            int headEnd = spriteHeight * 56;    // 0.22 * 256
-            int bodyEnd = spriteHeight * 166;   // 0.65 * 256
-
-            for(int sx = sxStart; sx < sxEnd; sx++) {
-                if(distance > zBuffer[sx]) continue;
-
-                // centerX in fixed-point (0-256 range)
-                int relXFP = ((sx - (screenX - spriteWidth/2)) * 256) / spriteWidth;
-                int centerXFP = relXFP - 128;
-                if(centerXFP < 0) centerXFP = -centerXFP;
-                centerXFP *= 2; // now 0-256 range
-
-                for(int y = yStart; y <= yEnd; y++) {
-                    // relY in fixed-point (0-256 range)
-                    int relYFP = ((y - drawStartY) * 256);
-
-                    unsigned int eColor;
-                    if(relYFP < headEnd) {
-                        if(centerXFP > 153) continue; // head width 60%
-                        eColor = 0xFF3333EE; // bright red demon skin (ABGR)
-
-                        // Face detail using percentage coordinates
-                        int headFrac = (relYFP * 100) / headEnd; // 0-99 vertical
-                        int headXFrac = (centerXFP * 100) / 153; // 0-99 from center
-
-                        // Horns: top 15%, outer 60-90% from center
-                        if(headFrac < 15 && headXFrac >= 60 && headXFrac < 95) {
-                            eColor = 0xFF181888;
-                        }
-                        // Eyes: 28-48% height, 25-65% from center
-                        else if(headFrac >= 28 && headFrac < 48 && headXFrac >= 25 && headXFrac < 65) {
-                            eColor = 0xFF00FFFF; // glowing yellow (ABGR)
-                        }
-                        // Mouth teeth: 72-92% height, within 65% of center
-                        else if(headFrac >= 72 && headFrac < 92 && headXFrac < 65) {
-                            if((relXFP >> 4) & 1) {
-                                eColor = 0xFFDDEEEE; // white teeth (ABGR)
-                            } else {
-                                eColor = 0xFF000044; // dark mouth gaps (ABGR)
-                            }
-                        }
-                    } else if(relYFP < bodyEnd) {
-                        if(centerXFP > 204) continue; // body width 80%
-                        eColor = 0xFF2222DD; // vivid red body (ABGR)
-                    } else {
-                        if(centerXFP > 102 && centerXFP < 153) continue; // leg gap
-                        if(centerXFP > 230) continue;
-                        eColor = 0xFF1818AA; // red legs (ABGR)
-                    }
-
-                    // Death flash: alternate white/bright red
-                    if(enemies[i].death_frame > 0) {
-                        eColor = (enemies[i].death_frame & 2) ? 0xFFFFFFFF : 0xFF3333FF;
-                    }
-
-                    int r = (((eColor >> 16) & 0xFF) * eFogFP) >> 8;
-                    int g = (((eColor >> 8) & 0xFF) * eFogFP) >> 8;
-                    int b = ((eColor & 0xFF) * eFogFP) >> 8;
-
-                    vram[y * BUF_WIDTH + sx] = 0xFF000000 | (r << 16) | (g << 8) | b;
-                }
-            }
+            spX0[spCount] = (float)(screenX - spriteW / 2);
+            spX1[spCount] = (float)(screenX + spriteW / 2);
+            spY0[spCount] = (float)((SCREEN_HEIGHT - spriteH) / 2);
+            spY1[spCount] = spY0[spCount] + (float)spriteH;
+            spZ[spCount] = z;
+            spFog[spCount] = 0xFF000000 | (fogByte << 16) | (fogByte << 8) | fogByte;
+            spDying[spCount] = (enemies[i].death_frame > 0);
+            spDeathFrame[spCount] = enemies[i].death_frame;
+            spCount++;
         }
     }
 
-    // Draw crosshair
-    for(int i = -6; i <= 6; i++) {
-        int cx = SCREEN_WIDTH/2 + i;
-        int cy = SCREEN_HEIGHT/2;
-        if(cx >= 0 && cx < SCREEN_WIDTH)
-            vram[cy * BUF_WIDTH + cx] = 0xAAFFFFFF;
-    }
-    for(int i = -6; i <= 6; i++) {
-        int cy = SCREEN_HEIGHT/2 + i;
-        int cx = SCREEN_WIDTH/2;
-        if(cy >= 0 && cy < SCREEN_HEIGHT)
-            vram[cy * BUF_WIDTH + cx] = 0xAAFFFFFF;
+    // Batch dying sprites first (normal sprites draw on top)
+    {
+        int dyingCount = 0;
+        for(int si = 0; si < spCount; si++)
+            if(spDying[si]) dyingCount++;
+        if(dyingCount > 0) {
+            sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+            sceGuTexImage(0, 32, 64, 32, demon_sprite_mask);
+            TexVertex* v = (TexVertex*)sceGuGetMemory(dyingCount * 2 * sizeof(TexVertex));
+            int vi = 0;
+            for(int si = 0; si < spCount; si++) {
+                if(!spDying[si]) continue;
+                unsigned int fc = (spDeathFrame[si] & 2) ? 0xFFFFFFFF : 0xFF3333FF;
+                v[vi].u = 0;  v[vi].v = 0;  v[vi].color = fc;
+                v[vi].x = spX0[si]; v[vi].y = spY0[si]; v[vi].z = spZ[si]; vi++;
+                v[vi].u = 32; v[vi].v = 64; v[vi].color = fc;
+                v[vi].x = spX1[si]; v[vi].y = spY1[si]; v[vi].z = spZ[si]; vi++;
+            }
+            sceGuDrawArray(GU_SPRITES, TEX_VERTEX_FMT, vi, 0, v);
+        }
     }
 
-    // Draw minimap (top-right corner)
+    // Batch normal sprites (drawn last, appear in front of dying)
+    {
+        int normalCount = 0;
+        for(int si = 0; si < spCount; si++)
+            if(!spDying[si]) normalCount++;
+        if(normalCount > 0) {
+            sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+            sceGuTexImage(0, 32, 64, 32, demon_sprite);
+            TexVertex* v = (TexVertex*)sceGuGetMemory(normalCount * 2 * sizeof(TexVertex));
+            int vi = 0;
+            for(int si = 0; si < spCount; si++) {
+                if(spDying[si]) continue;
+                v[vi].u = 0;  v[vi].v = 0;  v[vi].color = spFog[si];
+                v[vi].x = spX0[si]; v[vi].y = spY0[si]; v[vi].z = spZ[si]; vi++;
+                v[vi].u = 32; v[vi].v = 64; v[vi].color = spFog[si];
+                v[vi].x = spX1[si]; v[vi].y = spY1[si]; v[vi].z = spZ[si]; vi++;
+            }
+            sceGuDrawArray(GU_SPRITES, TEX_VERTEX_FMT, vi, 0, v);
+        }
+    }
+
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuDepthMask(0);
+
+    // ===== PHASE 4: HUD OVERLAY (no depth test) =====
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_TEXTURE_2D);
+
+    // Crosshair (2 thin quads)
+    guDrawRect(SCREEN_WIDTH/2 - 6, SCREEN_HEIGHT/2, 13, 1, 0xAAFFFFFF);
+    guDrawRect(SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 6, 1, 13, 0xAAFFFFFF);
+
+    // Minimap background
     int mapScale = 4;
     int mapOffX = SCREEN_WIDTH - ctx.map_width * mapScale - 8;
     int mapOffY = 8;
-    // Background
-    for(int my = 0; my < ctx.map_height; my++) {
-        for(int mx = 0; mx < ctx.map_width; mx++) {
-            unsigned int mColor;
-            if(ctx.current_map[my * ctx.map_width + mx] == '#')
-                mColor = 0xCC555555;
-            else
-                mColor = 0xCC222222;
+    guDrawRect(mapOffX, mapOffY, ctx.map_width * mapScale, ctx.map_height * mapScale, 0xCC222222);
 
-            for(int py = 0; py < mapScale; py++) {
-                for(int px = 0; px < mapScale; px++) {
-                    int sx = mapOffX + mx * mapScale + px;
-                    int sy = mapOffY + my * mapScale + py;
-                    if(sx >= 0 && sx < SCREEN_WIDTH && sy >= 0 && sy < SCREEN_HEIGHT)
-                        vram[sy * BUF_WIDTH + sx] = mColor;
+    // Minimap wall tiles (batched)
+    {
+        int wallCount = 0;
+        for(int my = 0; my < ctx.map_height; my++)
+            for(int mx = 0; mx < ctx.map_width; mx++)
+                if(ctx.current_map[my * ctx.map_width + mx] == '#') wallCount++;
+        if(wallCount > 0) {
+            ColorVertex* wv = (ColorVertex*)sceGuGetMemory(wallCount * 2 * sizeof(ColorVertex));
+            int wi = 0;
+            for(int my = 0; my < ctx.map_height; my++) {
+                for(int mx = 0; mx < ctx.map_width; mx++) {
+                    if(ctx.current_map[my * ctx.map_width + mx] != '#') continue;
+                    wv[wi].color = 0xCC555555;
+                    wv[wi].x = mapOffX + mx * mapScale;
+                    wv[wi].y = mapOffY + my * mapScale; wv[wi].z = 0; wi++;
+                    wv[wi].color = 0xCC555555;
+                    wv[wi].x = mapOffX + mx * mapScale + mapScale;
+                    wv[wi].y = mapOffY + my * mapScale + mapScale; wv[wi].z = 0; wi++;
                 }
             }
+            sceGuDrawArray(GU_SPRITES, COLOR_VERTEX_FMT, wi, 0, wv);
         }
     }
-    // Player dot on minimap
-    int pmx = mapOffX + (int)(player.x * mapScale);
-    int pmy = mapOffY + (int)(player.y * mapScale);
-    for(int dy2 = -1; dy2 <= 1; dy2++) {
-        for(int dx2 = -1; dx2 <= 1; dx2++) {
-            int sx = pmx + dx2;
-            int sy = pmy + dy2;
-            if(sx >= 0 && sx < SCREEN_WIDTH && sy >= 0 && sy < SCREEN_HEIGHT)
-                vram[sy * BUF_WIDTH + sx] = 0xFF00FF00;
-        }
+
+    // Player dot (3x3 green)
+    {
+        float pmx = mapOffX + player.x * mapScale;
+        float pmy = mapOffY + player.y * mapScale;
+        guDrawRect(pmx - 1, pmy - 1, 3, 3, 0xFF00FF00);
+        // Direction line
+        float dirX = pmx + cosf(player.angle) * 5;
+        float dirY = pmy + sinf(player.angle) * 5;
+        guDrawRect(dirX, dirY, 2, 2, 0xFF00FF00);
     }
-    // Player direction on minimap
-    int dirEndX = pmx + (int)(cosf(player.angle) * 5);
-    int dirEndY = pmy + (int)(sinf(player.angle) * 5);
-    if(dirEndX >= 0 && dirEndX < SCREEN_WIDTH && dirEndY >= 0 && dirEndY < SCREEN_HEIGHT)
-        vram[dirEndY * BUF_WIDTH + dirEndX] = 0xFF00FF00;
+
     // Enemy dots on minimap
     for(int i = 0; i < level->enemy_count; i++) {
         if(!enemies[i].alive) continue;
-        int ex = mapOffX + (int)(enemies[i].x * mapScale);
-        int ey = mapOffY + (int)(enemies[i].y * mapScale);
-        if(ex >= 0 && ex < SCREEN_WIDTH && ey >= 0 && ey < SCREEN_HEIGHT)
-            vram[ey * BUF_WIDTH + ex] = 0xFF0000FF; // red in ABGR
+        float ex = mapOffX + enemies[i].x * mapScale;
+        float ey = mapOffY + enemies[i].y * mapScale;
+        guDrawRect(ex, ey, 2, 2, 0xFF0000FF);
     }
 
-    // Draw HUD bar
-    drawRect(0, SCREEN_HEIGHT - 24, SCREEN_WIDTH, 24, 0xDD111111);
-    drawRect(0, SCREEN_HEIGHT - 24, SCREEN_WIDTH, 1, 0xFF666666);
+    // HUD bar
+    guDrawRect(0, SCREEN_HEIGHT - 24, SCREEN_WIDTH, 24, 0xDD111111);
+    guDrawRect(0, SCREEN_HEIGHT - 24, SCREEN_WIDTH, 1, 0xFF666666);
 
-    // Lives
-    drawString(8, SCREEN_HEIGHT - 18, "LIVES", 0xFF888888);
-    for(int i = 0; i < player.lives; i++) {
-        drawRect(48 + i * 12, SCREEN_HEIGHT - 18, 8, 10, 0xFF4444FF);
+    // Lives blocks
+    for(int i = 0; i < player.lives; i++)
+        guDrawRect(48 + i * 12, SCREEN_HEIGHT - 18, 8, 10, 0xFF4444FF);
+
+    // Damage flash border
+    if(player.invulnerable_frames > 100) {
+        unsigned int fc = 0xFF0000FF;
+        guDrawRect(0, 0, SCREEN_WIDTH, 3, fc);
+        guDrawRect(0, SCREEN_HEIGHT - 3, SCREEN_WIDTH, 3, fc);
+        guDrawRect(0, 3, 3, SCREEN_HEIGHT - 6, fc);
+        guDrawRect(SCREEN_WIDTH - 3, 3, 3, SCREEN_HEIGHT - 6, fc);
     }
 
-    // Kills
+    // HUD text (font atlas)
+    guDrawString(8, SCREEN_HEIGHT - 18, "LIVES", 0xFF888888);
+
     char killStr[16];
     int k = player.kills;
     int kr = level->kills_required;
@@ -996,45 +1135,23 @@ void render3D() {
     killStr[8] = '0' + (kr / 10);
     killStr[9] = '0' + (kr % 10);
     killStr[10] = '\0';
-    drawString(120, SCREEN_HEIGHT - 18, killStr, 0xFF00CCFF);
+    guDrawString(120, SCREEN_HEIGHT - 18, killStr, 0xFF00CCFF);
 
-    // Level name in brightened theme color
     {
         unsigned int hn = 0xFF000000 | (((tb+255)/2) << 16) | (((tg+255)/2) << 8) | ((tr+255)/2);
-        drawString(280, SCREEN_HEIGHT - 18, level->name, hn);
+        guDrawString(280, SCREEN_HEIGHT - 18, level->name, hn);
     }
 
-    // FPS counter
     char fpsStr[8];
     fpsStr[0] = '0' + (fps_display / 10);
     fpsStr[1] = '0' + (fps_display % 10);
-    fpsStr[2] = 'F';
-    fpsStr[3] = 'P';
-    fpsStr[4] = 'S';
-    fpsStr[5] = '\0';
-    drawString(SCREEN_WIDTH - 38, SCREEN_HEIGHT - 18, fpsStr, 0xFF44FF44);
-
-    // Damage flash - red border when player just got hit
-    if(player.invulnerable_frames > 100) {
-        unsigned int flashColor = 0xFF0000FF; // red in ABGR
-        int t = 3;
-        for(int y = 0; y < t; y++) {
-            unsigned int* row = vram + y * BUF_WIDTH;
-            for(int fx = 0; fx < SCREEN_WIDTH; fx++) row[fx] = flashColor;
-        }
-        for(int y = SCREEN_HEIGHT - t; y < SCREEN_HEIGHT; y++) {
-            unsigned int* row = vram + y * BUF_WIDTH;
-            for(int fx = 0; fx < SCREEN_WIDTH; fx++) row[fx] = flashColor;
-        }
-        for(int y = t; y < SCREEN_HEIGHT - t; y++) {
-            unsigned int* row = vram + y * BUF_WIDTH;
-            for(int fx = 0; fx < t; fx++) row[fx] = flashColor;
-            for(int fx = SCREEN_WIDTH - t; fx < SCREEN_WIDTH; fx++) row[fx] = flashColor;
-        }
-    }
+    fpsStr[2] = 'F'; fpsStr[3] = 'P'; fpsStr[4] = 'S'; fpsStr[5] = '\0';
+    guDrawString(SCREEN_WIDTH - 38, SCREEN_HEIGHT - 18, fpsStr, 0xFF44FF44);
 }
 
-// Update player
+// ============================================================
+// GAME LOGIC (player, enemies, shooting, level loading)
+// ============================================================
 void updatePlayer(SceCtrlData* pad) {
     float moveSpeed = 0.08f;
     float turnSpeed = 0.05f;
@@ -1107,22 +1224,23 @@ void updateEnemies() {
 
         float dx = player.x - enemies[i].x;
         float dy = player.y - enemies[i].y;
-        float dist = sqrtf(dx*dx + dy*dy);
+        float distSq = dx*dx + dy*dy;
 
-        float speed = 0.02f;
-        if(dist > 1.0f) {
+        if(distSq > 1.0f) { // dist > 1.0 — chase player
+            float dist = sqrtf(distSq);
+            float speed = 0.02f;
             enemies[i].x += (dx / dist) * speed;
             enemies[i].y += (dy / dist) * speed;
         }
 
-        if(dist < 0.5f && player.invulnerable_frames == 0) {
+        if(distSq < 0.25f && player.invulnerable_frames == 0) { // dist < 0.5
             player.lives--;
             player.invulnerable_frames = 120;
         }
     }
 }
 
-// Shooting
+// Shooting (dot/cross product — avoids atan2f + sqrtf per enemy)
 void handleShooting(SceCtrlData* pad) {
     static int shoot_pressed = 0;
 
@@ -1130,21 +1248,21 @@ void handleShooting(SceCtrlData* pad) {
         if(!shoot_pressed) {
             play_shoot_sfx();
             const LevelData* level = &all_levels[ctx.current_level];
+            float dirX = cosf(player.angle);
+            float dirY = sinf(player.angle);
             for(int i = 0; i < level->enemy_count; i++) {
-                if(!enemies[i].alive) continue;
+                if(!enemies[i].alive || enemies[i].death_frame > 0) continue;
 
                 float dx = enemies[i].x - player.x;
                 float dy = enemies[i].y - player.y;
-                float angleToEnemy = atan2f(dy, dx);
-                float angleDiff = angleToEnemy - player.angle;
-
-                while(angleDiff > M_PI) angleDiff -= 2.0f * M_PI;
-                while(angleDiff < -M_PI) angleDiff += 2.0f * M_PI;
-
-                if(fabsf(angleDiff) < 0.087f) {
-                    float distance = sqrtf(dx*dx + dy*dy);
-                    if(distance < 15.0f && enemies[i].death_frame == 0) {
-                        enemies[i].death_frame = 12; // flash for 12 frames then die
+                float dot = dx * dirX + dy * dirY;
+                if(dot <= 0) continue; // behind player
+                // |angleDiff| < 0.087 rad ≈ |cross/dot| < 0.087
+                float cross = dx * dirY - dy * dirX;
+                if(fabsf(cross) < 0.087f * dot) {
+                    float distSq = dx*dx + dy*dy;
+                    if(distSq < 225.0f) { // 15^2
+                        enemies[i].death_frame = 12;
                         player.kills++;
                         break;
                     }
@@ -1197,9 +1315,11 @@ void loadLevel(int level_index) {
     ctx.state_timer = 120; // 2 seconds
 }
 
-// Draw title screen
+// ============================================================
+// SCREEN FUNCTIONS (title, intro, complete, game over, victory)
+// ============================================================
 void drawTitleScreen(int frame) {
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    unsigned int* vram = ram_fb;
 
     // Dark background with slow vertical gradient
     for(int y = 0; y < SCREEN_HEIGHT; y++) {
@@ -1254,7 +1374,7 @@ void drawTitleScreen(int frame) {
 
 // Draw level intro card
 void drawLevelIntro(int timer) {
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    unsigned int* vram = ram_fb;
     const LevelData* level = &all_levels[ctx.current_level];
     unsigned int tc = level->theme_color;
     int tr = tc & 0xFF, tg = (tc >> 8) & 0xFF, tb = (tc >> 16) & 0xFF;
@@ -1302,7 +1422,7 @@ void drawLevelIntro(int timer) {
 
 // Draw level complete card
 void drawLevelComplete(int timer) {
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    unsigned int* vram = ram_fb;
     const LevelData* level = &all_levels[ctx.current_level];
     unsigned int tc = level->theme_color;
     int tr = tc & 0xFF, tg = (tc >> 8) & 0xFF, tb = (tc >> 16) & 0xFF;
@@ -1360,7 +1480,7 @@ void drawLevelComplete(int timer) {
 
 // Draw game over screen
 void drawGameOver(int timer) {
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    unsigned int* vram = ram_fb;
 
     // Dark red background
     for(int y = 0; y < SCREEN_HEIGHT; y++) {
@@ -1385,7 +1505,7 @@ void drawGameOver(int timer) {
 
 // Draw victory screen
 void drawVictory(int frame) {
-    unsigned int* vram = (unsigned int*)(draw_buffer ? fbp1 : fbp0);
+    unsigned int* vram = ram_fb;
 
     // Gold gradient background
     for(int y = 0; y < SCREEN_HEIGHT; y++) {
@@ -1396,7 +1516,7 @@ void drawVictory(int frame) {
     }
 
     drawStringCenteredScaled(55, "YOU SURVIVED", 0xFF00DDFF, 2);
-    drawStringCenteredScaled(78, "ALL 9 LEVELS", 0xFF00AAFF, 2);
+    drawStringCenteredScaled(78, "ALL 24 LEVELS", 0xFF00AAFF, 2);
 
     // Horizontal rule
     for(int x = 100; x < SCREEN_WIDTH - 100; x++)
@@ -1409,37 +1529,83 @@ void drawVictory(int frame) {
     }
 }
 
+// ============================================================
+// MAIN
+// ============================================================
 int main(int argc, char *argv[]) {
     log_debug("=== Demon Blaster Starting ===");
+    scePowerSetClockFrequency(333, 333, 166); // CPU 333MHz, bus 166MHz
     log_debug("Setting up callbacks...");
     SetupCallbacks();
 
-    log_debug("Initializing display...");
-    fbp0 = (void*)0x04000000;
-    fbp1 = (void*)0x04000000 + (BUF_WIDTH * SCREEN_HEIGHT * 4);
-    sceDisplaySetMode(0, SCREEN_WIDTH, SCREEN_HEIGHT);
-    sceDisplaySetFrameBuf(fbp0, BUF_WIDTH, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_NEXTFRAME);
+    log_debug("Initializing GU display...");
+    // Allocate VRAM buffers
+    gu_fbp0 = getStaticVramBuffer(BUF_WIDTH, SCREEN_HEIGHT, GU_PSM_8888);
+    gu_fbp1 = getStaticVramBuffer(BUF_WIDTH, SCREEN_HEIGHT, GU_PSM_8888);
+    gu_zbp  = getStaticVramBuffer(BUF_WIDTH, SCREEN_HEIGHT, GU_PSM_4444);
+
+    sceGuInit();
+    sceGuStart(GU_DIRECT, gu_list);
+
+    // Framebuffers
+    sceGuDrawBuffer(GU_PSM_8888, gu_fbp0, BUF_WIDTH);
+    sceGuDispBuffer(SCREEN_WIDTH, SCREEN_HEIGHT, gu_fbp1, BUF_WIDTH);
+    sceGuDepthBuffer(gu_zbp, BUF_WIDTH);
+
+    // Viewport & scissor
+    sceGuOffset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
+    sceGuViewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
+    sceGuScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    sceGuEnable(GU_SCISSOR_TEST);
+
+    // Depth
+    sceGuDepthRange(65535, 0);
+    sceGuDepthFunc(GU_LEQUAL);
+    sceGuDisable(GU_DEPTH_TEST); // off by default, render3D enables per-phase
+
+    // Texturing
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+
+    // Alpha test (for sprite transparency)
+    sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+    sceGuDisable(GU_ALPHA_TEST); // off by default, render3D enables when needed
+
+    // Blending off (we use alpha test, not blend)
+    sceGuDisable(GU_BLEND);
+
+    // Clear color
+    sceGuClearColor(0xFF000000);
+    sceGuClearDepth(65535);
+
+    sceGuFinish();
+    sceGuSync(0, 0);
+    sceDisplayWaitVblankStart();
+    sceGuDisplay(GU_TRUE);
+    gu_draw_buffer = gu_fbp0; // initial draw target
 
     log_debug("Initializing controls...");
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
 
     log_debug("Initializing game state...");
-    // Initialize
     player.lives = MAX_LIVES;
-    g_audio.audio_channel = -1;
-    ctx.frame_count = 0;
-
-    log_debug("Starting on title screen...");
     ctx.state = STATE_TITLE;
     ctx.frame_count = 0;
     g_audio.audio_channel = -1;
     g_audio.audio_thread_running = 1;
     start_sfx();
 
-    log_debug("Pre-generating textures and ray tables...");
+    log_debug("Pre-generating textures, sprites, ray tables, and SFX...");
     generateTextures();
+    generateDemonSprite();
+    generateFontAtlas();
+    generateSFX();
     initRayTable();
+    sceKernelDcacheWritebackAll(); // flush textures to RAM before GE reads them
 
     log_debug("Entering main loop...");
     fps_last_tick = sceKernelGetSystemTimeLow();
@@ -1450,6 +1616,7 @@ int main(int argc, char *argv[]) {
         sceCtrlReadBufferPositive(&pad, 1);
 
         const LevelData* level_data = &all_levels[ctx.current_level];
+        int used_gu = 0; // track whether render3D already did GU frame
 
         switch(ctx.state) {
             case STATE_TITLE:
@@ -1473,19 +1640,49 @@ int main(int argc, char *argv[]) {
                 updatePlayer(&pad);
                 updateEnemies();
                 handleShooting(&pad);
+
+                // GU hardware-rendered frame
+                sceGuStart(GU_DIRECT, gu_list);
+                sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
                 render3D();
+                sceGuFinish();
+                sceGuSync(0, 0);
+                used_gu = 1;
 
                 // Check win condition
                 if(player.kills >= level_data->kills_required) {
                     ctx.state = STATE_LEVEL_COMPLETE;
                     ctx.state_timer = 150;
                     play_levelup_sfx();
+                    init_audio(champions_music);
                 }
 
                 // Check lose condition
                 if(player.lives <= 0) {
                     ctx.state = STATE_GAME_OVER;
                     ctx.state_timer = 240;
+                }
+
+                // Debug: R+Circle = next level, R+Square = previous level
+                {
+                    static int skip_held = 0;
+                    if((pad.Buttons & PSP_CTRL_RTRIGGER) && (pad.Buttons & PSP_CTRL_CIRCLE)) {
+                        if(!skip_held) {
+                            play_levelup_sfx();
+                            loadLevel(ctx.current_level + 1);
+                            skip_held = 1;
+                        }
+                    } else if((pad.Buttons & PSP_CTRL_RTRIGGER) && (pad.Buttons & PSP_CTRL_SQUARE)) {
+                        if(!skip_held) {
+                            play_levelup_sfx();
+                            int prev = ctx.current_level - 1;
+                            if(prev < 0) prev = TOTAL_LEVELS - 1;
+                            loadLevel(prev);
+                            skip_held = 1;
+                        }
+                    } else {
+                        skip_held = 0;
+                    }
                 }
                 break;
 
@@ -1531,10 +1728,21 @@ int main(int argc, char *argv[]) {
             fps_last_tick = now;
         }
 
-        // Swap buffers
-        sceDisplaySetFrameBuf(draw_buffer ? fbp1 : fbp0, BUF_WIDTH, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_NEXTFRAME);
-        draw_buffer ^= 1;
+        if(!used_gu) {
+            // Software-rendered screens: DMA blit ram_fb to VRAM draw buffer
+            // Transfer engine uses absolute addresses (VRAM base = 0x04000000)
+            sceKernelDcacheWritebackAll();
+            sceGuStart(GU_DIRECT, gu_list);
+            sceGuCopyImage(GU_PSM_8888, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, BUF_WIDTH,
+                           ram_fb, 0, 0, BUF_WIDTH,
+                           (void*)(0x04000000 + (unsigned int)gu_draw_buffer));
+            sceGuFinish();
+            sceGuSync(0, 0);
+        }
+
         sceDisplayWaitVblankStart();
+        sceGuSwapBuffers();
+        gu_draw_buffer = (gu_draw_buffer == gu_fbp0) ? gu_fbp1 : gu_fbp0;
 
         if((pad.Buttons & PSP_CTRL_START) && (pad.Buttons & PSP_CTRL_SELECT)) {
             break;
@@ -1550,6 +1758,7 @@ int main(int argc, char *argv[]) {
         free(g_audio.notes);
     }
 
+    sceGuTerm();
     sceKernelExitGame();
     return 0;
 }
