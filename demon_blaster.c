@@ -99,7 +99,9 @@ typedef enum {
     STATE_PLAYING,
     STATE_LEVEL_COMPLETE,
     STATE_GAME_OVER,
-    STATE_VICTORY
+    STATE_VICTORY,
+    STATE_NAME_ENTRY,
+    STATE_HIGH_SCORES
 } GameState;
 
 // Player structure
@@ -144,17 +146,117 @@ typedef struct {
     char current_map[MAX_MAP_SIZE * MAX_MAP_SIZE];
     int map_width;
     int map_height;
+    int level_timer_frames;
 } GameContext;
+
+// Per-level and run-wide stats for scoring
+typedef struct {
+    int level_kills;
+    int level_time_frames;
+} LevelStats;
+
+typedef struct {
+    LevelStats levels[24];
+    int total_kills;
+    int total_time_frames;
+    int levels_completed;
+} RunStats;
+
+// High score persistence
+#define MAX_HIGH_SCORES 5
+#define SCORES_PATH "ms0:/PSP/GAME/DemonBlaster/scores.dat"
+
+typedef struct {
+    char name[8];   /* 5 chars + null + 2 pad for alignment */
+    int score;
+    int total_time_frames;
+    int total_kills;
+} HighScoreEntry;
+
+typedef struct {
+    char magic[4];  /* "DBHS" */
+    int version;
+    HighScoreEntry entries[MAX_HIGH_SCORES];
+} HighScoreTable;
 
 Player player;
 Enemy enemies[MAX_ENEMIES];
 AudioState g_audio;
 GameContext ctx;
+RunStats run_stats;
+HighScoreTable high_scores;
+
+// Name entry state
+char entry_name[8];
+int entry_cursor;
+int entry_score;
 
 // FPS tracking
 unsigned int fps_last_tick = 0;
 int fps_frame_count = 0;
 int fps_display = 0;
+
+// ============================================================
+// HIGH SCORE SYSTEM
+// ============================================================
+int calculateScore(int total_kills, int total_time_frames) {
+    int time_bonus = (360000 - total_time_frames) / 6;
+    if (time_bonus < 0) time_bonus = 0;
+    return total_kills * 1000 + time_bonus;
+}
+
+void initHighScores(void) {
+    memset(&high_scores, 0, sizeof(HighScoreTable));
+    memcpy(high_scores.magic, "DBHS", 4);
+    high_scores.version = 1;
+    for (int i = 0; i < MAX_HIGH_SCORES; i++) {
+        memcpy(high_scores.entries[i].name, "-----", 6);
+    }
+}
+
+void loadHighScores(void) {
+    initHighScores();
+    FILE* f = fopen(SCORES_PATH, "rb");
+    if (!f) return;
+    HighScoreTable temp;
+    if (fread(&temp, sizeof(HighScoreTable), 1, f) == 1) {
+        if (memcmp(temp.magic, "DBHS", 4) == 0 && temp.version == 1) {
+            high_scores = temp;
+        }
+    }
+    fclose(f);
+}
+
+void saveHighScores(void) {
+    FILE* f = fopen(SCORES_PATH, "wb");
+    if (!f) return;
+    fwrite(&high_scores, sizeof(HighScoreTable), 1, f);
+    fclose(f);
+}
+
+void insertHighScore(const char* name, int score, int total_kills, int total_time_frames) {
+    // Find insertion point
+    int pos = MAX_HIGH_SCORES;
+    for (int i = 0; i < MAX_HIGH_SCORES; i++) {
+        if (score > high_scores.entries[i].score) {
+            pos = i;
+            break;
+        }
+    }
+    if (pos >= MAX_HIGH_SCORES) return;
+    // Shift lower entries down
+    for (int i = MAX_HIGH_SCORES - 1; i > pos; i--) {
+        high_scores.entries[i] = high_scores.entries[i - 1];
+    }
+    // Insert
+    memset(&high_scores.entries[pos], 0, sizeof(HighScoreEntry));
+    strncpy(high_scores.entries[pos].name, name, 5);
+    high_scores.entries[pos].name[5] = '\0';
+    high_scores.entries[pos].score = score;
+    high_scores.entries[pos].total_kills = total_kills;
+    high_scores.entries[pos].total_time_frames = total_time_frames;
+    saveHighScores();
+}
 
 // ============================================================
 // AUDIO SYSTEM (music + SFX)
@@ -1126,20 +1228,37 @@ void render3D() {
     // HUD text (font atlas)
     guDrawString(8, SCREEN_HEIGHT - 18, "LIVES", 0xFF888888);
 
-    char killStr[16];
-    int k = player.kills;
-    int kr = level->kills_required;
-    killStr[0] = 'K'; killStr[1] = 'I'; killStr[2] = 'L'; killStr[3] = 'L'; killStr[4] = 'S'; killStr[5] = ' ';
-    killStr[6] = '0' + (k % 10);
-    killStr[7] = '/';
-    killStr[8] = '0' + (kr / 10);
-    killStr[9] = '0' + (kr % 10);
-    killStr[10] = '\0';
-    guDrawString(120, SCREEN_HEIGHT - 18, killStr, 0xFF00CCFF);
+    {
+        char killStr[16];
+        int k = player.kills;
+        int kr = level->kills_required;
+        killStr[0] = 'K'; killStr[1] = 'I'; killStr[2] = 'L'; killStr[3] = 'L'; killStr[4] = 'S'; killStr[5] = ' ';
+        killStr[6] = '0' + (k / 10);
+        killStr[7] = '0' + (k % 10);
+        killStr[8] = '/';
+        killStr[9] = '0' + (kr / 10);
+        killStr[10] = '0' + (kr % 10);
+        killStr[11] = '\0';
+        guDrawString(110, SCREEN_HEIGHT - 18, killStr, 0xFF00CCFF);
+    }
+
+    {
+        int ts = ctx.level_timer_frames / 60;
+        int tm = ts / 60;
+        int tsec = ts % 60;
+        char timeStr[6];
+        timeStr[0] = '0' + (tm / 10);
+        timeStr[1] = '0' + (tm % 10);
+        timeStr[2] = ':';
+        timeStr[3] = '0' + (tsec / 10);
+        timeStr[4] = '0' + (tsec % 10);
+        timeStr[5] = '\0';
+        guDrawString(210, SCREEN_HEIGHT - 18, timeStr, 0xFFCCCCCC);
+    }
 
     {
         unsigned int hn = 0xFF000000 | (((tb+255)/2) << 16) | (((tg+255)/2) << 8) | ((tr+255)/2);
-        guDrawString(280, SCREEN_HEIGHT - 18, level->name, hn);
+        guDrawString(270, SCREEN_HEIGHT - 18, level->name, hn);
     }
 
     char fpsStr[8];
@@ -1226,7 +1345,7 @@ void updateEnemies() {
         float dy = player.y - enemies[i].y;
         float distSq = dx*dx + dy*dy;
 
-        if(distSq > 1.0f) { // dist > 1.0 — chase player
+        if(distSq > 0.15f) { // chase until overlapping damage range
             float dist = sqrtf(distSq);
             float speed = 0.02f;
             enemies[i].x += (dx / dist) * speed;
@@ -1316,6 +1435,7 @@ void loadLevel(int level_index) {
     init_audio(level->music);
 
     ctx.current_level = level_index;
+    ctx.level_timer_frames = 0;
     ctx.state = STATE_LEVEL_START;
     ctx.state_timer = 120; // 2 seconds
 }
@@ -1370,8 +1490,9 @@ void drawTitleScreen(int frame) {
     }
 
     // Controls hint - centered
-    drawStringCentered(200, "DPAD MOVE   X FIRE", 0xFF888888);
-    drawStringCentered(215, "L R STRAFE", 0xFF888888);
+    drawStringCentered(195, "DPAD MOVE   X FIRE", 0xFF888888);
+    drawStringCentered(210, "L R STRAFE", 0xFF888888);
+    drawStringCentered(232, "SELECT: HIGH SCORES", 0xFF556677);
 
     // Bottom line
     drawRect(0, SCREEN_HEIGHT - 2, SCREEN_WIDTH, 2, 0xFF002244);
@@ -1462,24 +1583,37 @@ void drawLevelComplete(int timer) {
     killStr[9] = '0' + (level->kills_required / 10);
     killStr[10] = '0' + (level->kills_required % 10);
     killStr[11] = '\0';
-    drawStringCenteredScaled(100, killStr, tc, 2);
+    drawStringCenteredScaled(90, killStr, tc, 2);
+
+    {
+        int lt = run_stats.levels[ctx.current_level].level_time_frames / 60;
+        char timeStr[12];
+        timeStr[0] = 'T'; timeStr[1] = 'I'; timeStr[2] = 'M'; timeStr[3] = 'E'; timeStr[4] = ' ';
+        timeStr[5] = '0' + ((lt / 60) / 10);
+        timeStr[6] = '0' + ((lt / 60) % 10);
+        timeStr[7] = ':';
+        timeStr[8] = '0' + ((lt % 60) / 10);
+        timeStr[9] = '0' + ((lt % 60) % 10);
+        timeStr[10] = '\0';
+        drawStringCenteredScaled(115, timeStr, 0xFFFFFFFF, 2);
+    }
 
     char livesStr[12];
     livesStr[0] = 'L'; livesStr[1] = 'I'; livesStr[2] = 'V'; livesStr[3] = 'E'; livesStr[4] = 'S';
     livesStr[5] = ' ';
     livesStr[6] = '0' + player.lives;
     livesStr[7] = '\0';
-    drawStringCenteredScaled(125, livesStr, 0xFFDDDDDD, 2);
+    drawStringCenteredScaled(140, livesStr, 0xFFDDDDDD, 2);
 
     // Progress bar - wider, centered, in theme color
     int progress = ((ctx.current_level + 1) * 280) / TOTAL_LEVELS;
-    drawRect(100, 160, 280, 10, 0xFF222222);
-    drawRect(100, 160, progress, 10, tc);
-    drawRect(100, 160, 280, 1, brightTC);
+    drawRect(100, 170, 280, 10, 0xFF222222);
+    drawRect(100, 170, progress, 10, tc);
+    drawRect(100, 170, 280, 1, brightTC);
 
     // "PRESS START" blinking - centered
     if(timer < 80 && (timer / 15) % 2 == 0) {
-        drawStringCenteredScaled(200, "PRESS START", 0xFFFFFFFF, 2);
+        drawStringCenteredScaled(205, "PRESS START", 0xFFFFFFFF, 2);
     }
 }
 
@@ -1509,6 +1643,18 @@ void drawGameOver(int timer) {
 }
 
 // Draw victory screen
+void formatScore(char* buf, int score) {
+    /* format as up to 7 digits, right-aligned with leading spaces removed */
+    int d = score;
+    buf[0] = '0' + (d / 100000) % 10;
+    buf[1] = '0' + (d / 10000) % 10;
+    buf[2] = '0' + (d / 1000) % 10;
+    buf[3] = '0' + (d / 100) % 10;
+    buf[4] = '0' + (d / 10) % 10;
+    buf[5] = '0' + d % 10;
+    buf[6] = '\0';
+}
+
 void drawVictory(int frame) {
     unsigned int* vram = ram_fb;
 
@@ -1520,18 +1666,169 @@ void drawVictory(int frame) {
             row[x] = 0xFF000000 | ((shade / 3) << 16) | (shade << 8) | shade;
     }
 
-    drawStringCenteredScaled(55, "YOU SURVIVED", 0xFF00DDFF, 2);
-    drawStringCenteredScaled(78, "ALL 24 LEVELS", 0xFF00AAFF, 2);
+    drawStringCenteredScaled(20, "YOU SURVIVED", 0xFF00DDFF, 2);
+    drawStringCenteredScaled(43, "ALL 24 LEVELS", 0xFF00AAFF, 2);
 
-    // Horizontal rule
     for(int x = 100; x < SCREEN_WIDTH - 100; x++)
-        vram[100 * BUF_WIDTH + x] = 0xFF0088AA;
+        vram[65 * BUF_WIDTH + x] = 0xFF0088AA;
 
-    drawStringCenteredScaled(120, "CONGRATULATIONS", 0xFFFFFFFF, 2);
+    // Total kills
+    {
+        char str[20];
+        int tk = run_stats.total_kills;
+        str[0] = 'T'; str[1] = 'O'; str[2] = 'T'; str[3] = 'A'; str[4] = 'L';
+        str[5] = ' '; str[6] = 'K'; str[7] = 'I'; str[8] = 'L'; str[9] = 'L'; str[10] = 'S';
+        str[11] = ' ';
+        str[12] = '0' + (tk / 100) % 10;
+        str[13] = '0' + (tk / 10) % 10;
+        str[14] = '0' + tk % 10;
+        str[15] = '\0';
+        drawStringCenteredScaled(78, str, 0xFF00CCFF, 2);
+    }
+
+    // Total time
+    {
+        int ts = run_stats.total_time_frames / 60;
+        char str[20];
+        str[0] = 'T'; str[1] = 'O'; str[2] = 'T'; str[3] = 'A'; str[4] = 'L';
+        str[5] = ' '; str[6] = 'T'; str[7] = 'I'; str[8] = 'M'; str[9] = 'E'; str[10] = ' ';
+        str[11] = '0' + ((ts / 60) / 10);
+        str[12] = '0' + ((ts / 60) % 10);
+        str[13] = ':';
+        str[14] = '0' + ((ts % 60) / 10);
+        str[15] = '0' + ((ts % 60) % 10);
+        str[16] = '\0';
+        drawStringCenteredScaled(103, str, 0xFFFFFFFF, 2);
+    }
+
+    // Score
+    {
+        int sc = calculateScore(run_stats.total_kills, run_stats.total_time_frames);
+        char str[16];
+        str[0] = 'S'; str[1] = 'C'; str[2] = 'O'; str[3] = 'R'; str[4] = 'E'; str[5] = ' ';
+        formatScore(str + 6, sc);
+        drawStringCenteredScaled(130, str, 0xFF00FFFF, 2);
+    }
+
+    for(int x = 100; x < SCREEN_WIDTH - 100; x++)
+        vram[155 * BUF_WIDTH + x] = 0xFF0088AA;
+
+    drawStringCenteredScaled(165, "CONGRATULATIONS", 0xFFFFFFFF, 2);
 
     if((frame / 30) % 2 == 0) {
-        drawStringCentered(200, "PRESS START TO PLAY", 0xFFCCCCCC);
+        drawStringCentered(210, "PRESS START", 0xFFCCCCCC);
     }
+}
+
+// ============================================================
+// HIGH SCORE SCREENS
+// ============================================================
+void drawHighScores(int frame) {
+    unsigned int* vram = ram_fb;
+
+    // Dark background
+    for(int y = 0; y < SCREEN_HEIGHT; y++) {
+        unsigned int* row = vram + y * BUF_WIDTH;
+        int shade = 8 + (y * 10) / SCREEN_HEIGHT;
+        for(int x = 0; x < SCREEN_WIDTH; x++)
+            row[x] = 0xFF000000 | (shade << 16) | (shade << 8) | shade;
+    }
+
+    drawStringCenteredScaled(15, "HIGH SCORES", 0xFF00CCFF, 3);
+
+    for(int x = 80; x < SCREEN_WIDTH - 80; x++)
+        vram[50 * BUF_WIDTH + x] = 0xFF006688;
+
+    for(int i = 0; i < MAX_HIGH_SCORES; i++) {
+        int y = 65 + i * 28;
+        HighScoreEntry* e = &high_scores.entries[i];
+        unsigned int col = (i == 0) ? 0xFF00CCFF : 0xFFCCCCCC;
+        char row_str[32];
+
+        // Rank
+        row_str[0] = '1' + i;
+        row_str[1] = ' ';
+        row_str[2] = ' ';
+
+        // Name (5 chars)
+        for(int c = 0; c < 5; c++)
+            row_str[3 + c] = e->name[c] ? e->name[c] : '-';
+        row_str[8] = ' ';
+        row_str[9] = ' ';
+
+        // Score (6 digits)
+        formatScore(row_str + 10, e->score);
+        row_str[16] = ' ';
+        row_str[17] = ' ';
+
+        // Time MM:SS
+        if(e->score > 0) {
+            int ts = e->total_time_frames / 60;
+            row_str[18] = '0' + ((ts / 60) / 10);
+            row_str[19] = '0' + ((ts / 60) % 10);
+            row_str[20] = ':';
+            row_str[21] = '0' + ((ts % 60) / 10);
+            row_str[22] = '0' + ((ts % 60) % 10);
+        } else {
+            row_str[18] = '-'; row_str[19] = '-';
+            row_str[20] = ':';
+            row_str[21] = '-'; row_str[22] = '-';
+        }
+        row_str[23] = '\0';
+        drawStringCenteredScaled(y, row_str, col, 2);
+    }
+
+    for(int x = 80; x < SCREEN_WIDTH - 80; x++)
+        vram[210 * BUF_WIDTH + x] = 0xFF006688;
+
+    if((frame / 30) % 2 == 0) {
+        drawStringCentered(230, "PRESS START", 0xFFCCCCCC);
+    }
+}
+
+void drawNameEntry(int frame) {
+    unsigned int* vram = ram_fb;
+
+    // Dark gold background
+    for(int y = 0; y < SCREEN_HEIGHT; y++) {
+        unsigned int* row = vram + y * BUF_WIDTH;
+        int shade = 10 + (y * 12) / SCREEN_HEIGHT;
+        for(int x = 0; x < SCREEN_WIDTH; x++)
+            row[x] = 0xFF000000 | ((shade / 3) << 16) | (shade << 8) | shade;
+    }
+
+    drawStringCenteredScaled(20, "NEW HIGH SCORE", 0xFF00CCFF, 2);
+
+    {
+        char str[16];
+        str[0] = 'S'; str[1] = 'C'; str[2] = 'O'; str[3] = 'R'; str[4] = 'E'; str[5] = ' ';
+        formatScore(str + 6, entry_score);
+        drawStringCenteredScaled(50, str, 0xFFFFFFFF, 2);
+    }
+
+    for(int x = 100; x < SCREEN_WIDTH - 100; x++)
+        vram[75 * BUF_WIDTH + x] = 0xFF006688;
+
+    drawStringCentered(90, "ENTER YOUR NAME", 0xFF888888);
+
+    // Draw 5 character slots at scale 3
+    int name_x = (SCREEN_WIDTH - 5 * 18) / 2;
+    for(int i = 0; i < 5; i++) {
+        char ch[2];
+        ch[0] = entry_name[i];
+        ch[1] = '\0';
+        unsigned int col = 0xFFFFFFFF;
+        drawStringScaled(name_x + i * 18, 115, ch, col, 3);
+
+        // Cursor underline
+        if(i == entry_cursor && (frame / 15) % 2 == 0) {
+            drawRect(name_x + i * 18, 140, 15, 3, 0xFF00CCFF);
+        }
+    }
+
+    drawStringCentered(165, "UP/DOWN CHANGE LETTER", 0xFF888888);
+    drawStringCentered(180, "LEFT/RIGHT MOVE", 0xFF888888);
+    drawStringCentered(200, "START TO CONFIRM", 0xFF00CCFF);
 }
 
 // ============================================================
@@ -1612,6 +1909,8 @@ int main(int argc, char *argv[]) {
     initRayTable();
     sceKernelDcacheWritebackAll(); // flush textures to RAM before GE reads them
 
+    loadHighScores();
+
     log_debug("Entering main loop...");
     fps_last_tick = sceKernelGetSystemTimeLow();
 
@@ -1628,8 +1927,13 @@ int main(int argc, char *argv[]) {
                 drawTitleScreen(ctx.frame_count);
                 if(pad.Buttons & PSP_CTRL_START) {
                     player.lives = MAX_LIVES;
+                    memset(&run_stats, 0, sizeof(RunStats));
                     loadLevel(0);
                     start_audio();
+                }
+                if((pad.Buttons & PSP_CTRL_SELECT) && !(pad.Buttons & PSP_CTRL_START)) {
+                    ctx.state = STATE_HIGH_SCORES;
+                    ctx.state_timer = 10; // debounce
                 }
                 break;
 
@@ -1642,6 +1946,7 @@ int main(int argc, char *argv[]) {
                 break;
 
             case STATE_PLAYING:
+                ctx.level_timer_frames++;
                 updatePlayer(&pad);
                 updateEnemies();
                 handleShooting(&pad);
@@ -1656,6 +1961,12 @@ int main(int argc, char *argv[]) {
 
                 // Check win condition
                 if(player.kills >= level_data->kills_required) {
+                    // Save level stats
+                    run_stats.levels[ctx.current_level].level_kills = player.kills;
+                    run_stats.levels[ctx.current_level].level_time_frames = ctx.level_timer_frames;
+                    run_stats.total_kills += player.kills;
+                    run_stats.total_time_frames += ctx.level_timer_frames;
+                    run_stats.levels_completed = ctx.current_level + 1;
                     ctx.state = STATE_LEVEL_COMPLETE;
                     ctx.state_timer = 150;
                     play_levelup_sfx();
@@ -1664,6 +1975,9 @@ int main(int argc, char *argv[]) {
 
                 // Check lose condition
                 if(player.lives <= 0) {
+                    // Save partial level stats for scoring
+                    run_stats.levels[ctx.current_level].level_kills = player.kills;
+                    run_stats.levels[ctx.current_level].level_time_frames = ctx.level_timer_frames;
                     ctx.state = STATE_GAME_OVER;
                     ctx.state_timer = 240;
                 }
@@ -1702,20 +2016,96 @@ int main(int argc, char *argv[]) {
             case STATE_GAME_OVER:
                 drawGameOver(ctx.state_timer);
                 ctx.state_timer--;
-                // Wait for START press or timeout
                 if((pad.Buttons & PSP_CTRL_START) && ctx.state_timer < 180) {
-                    player.lives = MAX_LIVES;
-                    loadLevel(0);
+                    // Check if partial run qualifies for high scores
+                    int go_score = calculateScore(run_stats.total_kills, run_stats.total_time_frames);
+                    if(go_score > 0 && go_score > high_scores.entries[MAX_HIGH_SCORES - 1].score) {
+                        entry_score = go_score;
+                        memcpy(entry_name, "AAAAA", 6);
+                        entry_cursor = 0;
+                        ctx.state = STATE_NAME_ENTRY;
+                        ctx.state_timer = 10;
+                    } else {
+                        ctx.state = STATE_HIGH_SCORES;
+                        ctx.state_timer = 10;
+                    }
                 }
-                if(ctx.state_timer <= 0) {
+                if(ctx.state_timer <= 0 && ctx.state == STATE_GAME_OVER) {
                     ctx.state = STATE_TITLE;
                 }
                 break;
 
             case STATE_VICTORY:
                 drawVictory(ctx.frame_count);
-                if(pad.Buttons & PSP_CTRL_START) {
-                    ctx.state = STATE_TITLE;
+                {
+                    static int vic_start_held = 0;
+                    if(pad.Buttons & PSP_CTRL_START) {
+                        if(!vic_start_held) {
+                            int vic_score = calculateScore(run_stats.total_kills, run_stats.total_time_frames);
+                            if(vic_score > high_scores.entries[MAX_HIGH_SCORES - 1].score) {
+                                entry_score = vic_score;
+                                memcpy(entry_name, "AAAAA", 6);
+                                entry_cursor = 0;
+                                ctx.state = STATE_NAME_ENTRY;
+                                ctx.state_timer = 10;
+                            } else {
+                                ctx.state = STATE_HIGH_SCORES;
+                                ctx.state_timer = 10;
+                            }
+                            vic_start_held = 1;
+                        }
+                    } else {
+                        vic_start_held = 0;
+                    }
+                }
+                break;
+
+            case STATE_NAME_ENTRY:
+                drawNameEntry(ctx.frame_count);
+                if(ctx.state_timer > 0) {
+                    ctx.state_timer--;
+                } else {
+                    static int ne_held = 0;
+                    int btns = pad.Buttons;
+                    if(btns & (PSP_CTRL_UP | PSP_CTRL_DOWN | PSP_CTRL_LEFT | PSP_CTRL_RIGHT | PSP_CTRL_START)) {
+                        if(!ne_held) {
+                            if(btns & PSP_CTRL_UP) {
+                                entry_name[entry_cursor]++;
+                                if(entry_name[entry_cursor] > 'Z') entry_name[entry_cursor] = 'A';
+                            }
+                            if(btns & PSP_CTRL_DOWN) {
+                                entry_name[entry_cursor]--;
+                                if(entry_name[entry_cursor] < 'A') entry_name[entry_cursor] = 'Z';
+                            }
+                            if(btns & PSP_CTRL_RIGHT) {
+                                entry_cursor++;
+                                if(entry_cursor > 4) entry_cursor = 4;
+                            }
+                            if(btns & PSP_CTRL_LEFT) {
+                                entry_cursor--;
+                                if(entry_cursor < 0) entry_cursor = 0;
+                            }
+                            if(btns & PSP_CTRL_START) {
+                                insertHighScore(entry_name, entry_score, run_stats.total_kills, run_stats.total_time_frames);
+                                ctx.state = STATE_HIGH_SCORES;
+                                ctx.state_timer = 10;
+                            }
+                            ne_held = 1;
+                        }
+                    } else {
+                        ne_held = 0;
+                    }
+                }
+                break;
+
+            case STATE_HIGH_SCORES:
+                drawHighScores(ctx.frame_count);
+                if(ctx.state_timer > 0) {
+                    ctx.state_timer--;
+                } else {
+                    if(pad.Buttons & PSP_CTRL_START) {
+                        ctx.state = STATE_TITLE;
+                    }
                 }
                 break;
         }
