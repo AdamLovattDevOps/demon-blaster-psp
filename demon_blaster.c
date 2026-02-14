@@ -1231,6 +1231,11 @@ void updateEnemies() {
             float speed = 0.02f;
             enemies[i].x += (dx / dist) * speed;
             enemies[i].y += (dy / dist) * speed;
+            
+            // Recalculate distance after movement for collision detection
+            dx = player.x - enemies[i].x;
+            dy = player.y - enemies[i].y;
+            distSq = dx*dx + dy*dy;
         }
 
         if(distSq < 0.25f && player.invulnerable_frames == 0) { // dist < 0.5
