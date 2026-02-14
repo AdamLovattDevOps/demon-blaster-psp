@@ -171,11 +171,12 @@ typedef struct {
     int score;
     int total_time_frames;
     int total_kills;
+    int max_level;
 } HighScoreEntry;
 
 typedef struct {
     char magic[4];  /* "DBHS" */
-    int version;
+    int version;    /* 2 = with max_level field */
     HighScoreEntry entries[MAX_HIGH_SCORES];
 } HighScoreTable;
 
@@ -208,7 +209,7 @@ int calculateScore(int total_kills, int total_time_frames) {
 void initHighScores(void) {
     memset(&high_scores, 0, sizeof(HighScoreTable));
     memcpy(high_scores.magic, "DBHS", 4);
-    high_scores.version = 1;
+    high_scores.version = 2;
     for (int i = 0; i < MAX_HIGH_SCORES; i++) {
         memcpy(high_scores.entries[i].name, "-----", 6);
     }
@@ -220,7 +221,7 @@ void loadHighScores(void) {
     if (!f) return;
     HighScoreTable temp;
     if (fread(&temp, sizeof(HighScoreTable), 1, f) == 1) {
-        if (memcmp(temp.magic, "DBHS", 4) == 0 && temp.version == 1) {
+        if (memcmp(temp.magic, "DBHS", 4) == 0 && temp.version == 2) {
             high_scores = temp;
         }
     }
@@ -234,11 +235,11 @@ void saveHighScores(void) {
     fclose(f);
 }
 
-void insertHighScore(const char* name, int score, int total_kills, int total_time_frames) {
+void insertHighScore(const char* name, int score, int total_kills, int total_time_frames, int max_level) {
     // Find insertion point
     int pos = MAX_HIGH_SCORES;
     for (int i = 0; i < MAX_HIGH_SCORES; i++) {
-        if (score > high_scores.entries[i].score) {
+        if (score >= high_scores.entries[i].score) {
             pos = i;
             break;
         }
@@ -255,6 +256,7 @@ void insertHighScore(const char* name, int score, int total_kills, int total_tim
     high_scores.entries[pos].score = score;
     high_scores.entries[pos].total_kills = total_kills;
     high_scores.entries[pos].total_time_frames = total_time_frames;
+    high_scores.entries[pos].max_level = max_level;
     saveHighScores();
 }
 
@@ -1774,7 +1776,19 @@ void drawHighScores(int frame) {
             row_str[20] = ':';
             row_str[21] = '-'; row_str[22] = '-';
         }
-        row_str[23] = '\0';
+        row_str[23] = ' ';
+        row_str[24] = ' ';
+        // Max level reached
+        if(e->score > 0) {
+            row_str[25] = 'L';
+            row_str[26] = '0' + (e->max_level / 10);
+            row_str[27] = '0' + (e->max_level % 10);
+        } else {
+            row_str[25] = '-';
+            row_str[26] = '-';
+            row_str[27] = '-';
+        }
+        row_str[28] = '\0';
         drawStringCenteredScaled(y, row_str, col, 2);
     }
 
@@ -1975,9 +1989,12 @@ int main(int argc, char *argv[]) {
 
                 // Check lose condition
                 if(player.lives <= 0) {
-                    // Save partial level stats for scoring
+                    // Save partial level stats and accumulate into totals for scoring
                     run_stats.levels[ctx.current_level].level_kills = player.kills;
                     run_stats.levels[ctx.current_level].level_time_frames = ctx.level_timer_frames;
+                    run_stats.total_kills += player.kills;
+                    run_stats.total_time_frames += ctx.level_timer_frames;
+                    run_stats.levels_completed = ctx.current_level + 1;
                     ctx.state = STATE_GAME_OVER;
                     ctx.state_timer = 240;
                 }
@@ -2019,7 +2036,7 @@ int main(int argc, char *argv[]) {
                 if((pad.Buttons & PSP_CTRL_START) && ctx.state_timer < 180) {
                     // Check if partial run qualifies for high scores
                     int go_score = calculateScore(run_stats.total_kills, run_stats.total_time_frames);
-                    if(go_score > 0 && go_score > high_scores.entries[MAX_HIGH_SCORES - 1].score) {
+                    if(go_score > 0 && go_score >= high_scores.entries[MAX_HIGH_SCORES - 1].score) {
                         entry_score = go_score;
                         memcpy(entry_name, "AAAAA", 6);
                         entry_cursor = 0;
@@ -2031,7 +2048,16 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 if(ctx.state_timer <= 0 && ctx.state == STATE_GAME_OVER) {
-                    ctx.state = STATE_TITLE;
+                    int go_score2 = calculateScore(run_stats.total_kills, run_stats.total_time_frames);
+                    if(go_score2 > 0 && go_score2 >= high_scores.entries[MAX_HIGH_SCORES - 1].score) {
+                        entry_score = go_score2;
+                        memcpy(entry_name, "AAAAA", 6);
+                        entry_cursor = 0;
+                        ctx.state = STATE_NAME_ENTRY;
+                        ctx.state_timer = 10;
+                    } else {
+                        ctx.state = STATE_TITLE;
+                    }
                 }
                 break;
 
@@ -2042,7 +2068,7 @@ int main(int argc, char *argv[]) {
                     if(pad.Buttons & PSP_CTRL_START) {
                         if(!vic_start_held) {
                             int vic_score = calculateScore(run_stats.total_kills, run_stats.total_time_frames);
-                            if(vic_score > high_scores.entries[MAX_HIGH_SCORES - 1].score) {
+                            if(vic_score > 0 && vic_score >= high_scores.entries[MAX_HIGH_SCORES - 1].score) {
                                 entry_score = vic_score;
                                 memcpy(entry_name, "AAAAA", 6);
                                 entry_cursor = 0;
@@ -2086,7 +2112,7 @@ int main(int argc, char *argv[]) {
                                 if(entry_cursor < 0) entry_cursor = 0;
                             }
                             if(btns & PSP_CTRL_START) {
-                                insertHighScore(entry_name, entry_score, run_stats.total_kills, run_stats.total_time_frames);
+                                insertHighScore(entry_name, entry_score, run_stats.total_kills, run_stats.total_time_frames, run_stats.levels_completed);
                                 ctx.state = STATE_HIGH_SCORES;
                                 ctx.state_timer = 10;
                             }
